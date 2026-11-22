@@ -1,0 +1,23 @@
+{
+  "name": "time-attendance",
+  "version": "1.0.0",
+  "description": "Call center time & attendance: roster, attendance, hours, approvals, payroll/billing export",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "dev": "node --no-warnings --watch server/index.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.22.3"
+  },
+  "optionalDependencies": {
+    "mssql": "^11.0.2"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "private": true
+}
