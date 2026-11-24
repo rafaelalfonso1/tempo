@@ -177,6 +177,40 @@ if (!hasCol('attendance_codes', 'counts_absent')) {
   db.exec('ALTER TABLE attendance_codes ADD COLUMN counts_absent INTEGER NOT NULL DEFAULT 0');
   db.exec("UPDATE attendance_codes SET counts_absent = 1 WHERE code IN ('A','E','S','NS')");
 }
+if (!hasCol('employees', 'modality')) db.exec("ALTER TABLE employees ADD COLUMN modality TEXT CHECK (modality IN ('WFH','ONS'))");
+
+// Schedules: effective-dated weekly templates (one row per weekday) + one-off day overrides.
+db.exec(`CREATE TABLE IF NOT EXISTS schedule_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  effective_from TEXT NOT NULL,
+  effective_to TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_sched_tpl_emp ON schedule_templates(employee_id, effective_from);
+CREATE TABLE IF NOT EXISTS schedule_template_days (
+  template_id INTEGER NOT NULL REFERENCES schedule_templates(id) ON DELETE CASCADE,
+  dow INTEGER NOT NULL CHECK (dow BETWEEN 0 AND 6),
+  is_off INTEGER NOT NULL DEFAULT 0,
+  start_time TEXT,
+  end_time TEXT,
+  break_minutes INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (template_id, dow)
+);
+CREATE TABLE IF NOT EXISTS schedule_overrides (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  work_date TEXT NOT NULL,
+  is_off INTEGER NOT NULL DEFAULT 0,
+  start_time TEXT,
+  end_time TEXT,
+  break_minutes INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, work_date)
+)`);
+
 db.exec(`CREATE TABLE IF NOT EXISTS saved_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -241,19 +275,6 @@ function seed() {
     const c1 = addCamp.run('HC-INB', 'Healthcare Inbound', 'Acme Health', 'ACME-INB').lastInsertRowid;
     const c2 = addCamp.run('SCHED', 'Patient Scheduling', 'Acme Health', 'ACME-SCH').lastInsertRowid;
 
-    const addCode = db.prepare('INSERT INTO attendance_codes(code,label,color,counts_present,is_paid,counts_absent,sort) VALUES (?,?,?,?,?,?,?)');
-    [
-      ['P', 'Present', '#16a34a', 1, 1, 0],
-      ['T', 'Tardy', '#ca8a04', 1, 1, 0],
-      ['A', 'Absent (unexcused)', '#dc2626', 0, 0, 1],
-      ['E', 'Excused absence', '#9333ea', 0, 0, 1],
-      ['S', 'Sick', '#ea580c', 0, 1, 1],
-      ['V', 'Vacation / PTO', '#2563eb', 0, 1, 0],
-      ['H', 'Holiday', '#0891b2', 0, 1, 0],
-      ['NS', 'No call / no show', '#7f1d1d', 0, 0, 1],
-      ['O', 'Day off (scheduled)', '#94a3b8', 0, 0, 0],
-      ['TR', 'Training', '#0d9488', 1, 1, 0],
-    ].forEach((r, i) => addCode.run(...r, i));
 
     const addDisp = db.prepare(`INSERT INTO dispositions(campaign_id,code,label,description,direction,is_paid,is_billable,payroll_code,requires_note)
       VALUES (?,?,?,?,?,?,?,?,?)`);
@@ -280,6 +301,7 @@ function seed() {
       addEmp.run(`E${n}`, f, l, camp, sup, '2026-0' + (1 + (i % 8)) + '-05', '2026-0' + (1 + (i % 8)) + '-19',
         `PH${n}`, `CRM${n}`, `EMR${n}`, `WFM${n}`, `QA${n}`);
     });
+    db.exec("UPDATE employees SET modality = CASE WHEN id % 3 = 0 THEN 'WFH' ELSE 'ONS' END");
 
     // Some sample hours for the last ~3 weeks so the time module has data.
     const batch = db.prepare("INSERT INTO ingest_batches(source,rows_received,rows_applied) VALUES ('seed',0,0)").run().lastInsertRowid;
@@ -304,5 +326,68 @@ function seed() {
   console.log('Seeded demo data. Logins: admin/admin123, ops/ops123, msantos/super123, jperez/super123');
 }
 seed();
+
+// ---------- attendance code set (v2: company code list) ----------
+// Upserts by code so existing attendance history is preserved. Old codes are renamed
+// where there is a clear equivalent and deactivated otherwise.
+function applyCodeSetV2() {
+  if (getSetting('codes_version') === '2') return;
+  // [code, label, color, counts_present, counts_absent, is_paid]
+  const CODES = [
+    ['P', 'Present', '#16a34a', 1, 0, 1],
+    ['LT', 'Late', '#ca8a04', 1, 0, 1],
+    ['NCNS', 'No Call No Show', '#7f1d1d', 0, 1, 0],
+    ['A', 'Absent', '#dc2626', 0, 1, 0],
+    ['LOA', 'Leave of Absence', '#6b7280', 0, 0, 0],
+    ['MLP', 'Planned Medical License', '#7c3aed', 0, 0, 0],
+    ['MLUP', 'Unplanned Medical License', '#ea580c', 0, 1, 0],
+    ['V', 'Vacation', '#2563eb', 0, 0, 1],
+    ['VTO', 'Voluntary Time Off', '#0891b2', 0, 0, 0],
+    ['OFF', 'Off agents', '#94a3b8', 0, 0, 0],
+    ['PTO', 'Paid Time Off', '#0d9488', 0, 0, 1],
+  ];
+  const RENAME = { T: 'LT', NS: 'NCNS', O: 'OFF' };
+  tx(() => {
+    for (const [from, to] of Object.entries(RENAME)) {
+      if (!db.prepare('SELECT 1 FROM attendance_codes WHERE code = ?').get(to))
+        db.prepare('UPDATE attendance_codes SET code = ? WHERE code = ? AND campaign_id IS NULL').run(to, from);
+    }
+    const keep = new Set(CODES.map((c) => c[0]));
+    CODES.forEach(([code, label, color, pres, abs, paid], i) => {
+      const row = db.prepare('SELECT id FROM attendance_codes WHERE code = ? AND campaign_id IS NULL').get(code);
+      if (row) db.prepare('UPDATE attendance_codes SET label=?, color=?, counts_present=?, counts_absent=?, is_paid=?, sort=?, active=1 WHERE id=?').run(label, color, pres, abs, paid, i, row.id);
+      else db.prepare('INSERT INTO attendance_codes(code,label,color,counts_present,counts_absent,is_paid,sort) VALUES (?,?,?,?,?,?,?)').run(code, label, color, pres, abs, paid, i);
+    });
+    for (const r of db.prepare('SELECT id, code FROM attendance_codes WHERE campaign_id IS NULL').all())
+      if (!keep.has(r.code)) db.prepare('UPDATE attendance_codes SET active = 0, sort = 100 WHERE id = ?').run(r.id);
+    setSetting('codes_version', '2');
+  });
+}
+applyCodeSetV2();
+
+// Demo schedules for a fresh database (Mon–Fri, two different shift patterns, one agent with varied days).
+function seedSchedules() {
+  if (getSetting('schedules_seeded') || db.prepare('SELECT COUNT(*) n FROM schedule_templates').get().n) return;
+  if (!db.prepare('SELECT 1 FROM ingest_batches WHERE source = ?').get('seed')) { setSetting('schedules_seeded', '1'); return; }
+  const from = new Date(); from.setUTCDate(from.getUTCDate() - 60);
+  const eff = from.toISOString().slice(0, 10);
+  const tpl = db.prepare('INSERT INTO schedule_templates(employee_id, effective_from) VALUES (?,?)');
+  const day = db.prepare('INSERT INTO schedule_template_days(template_id,dow,is_off,start_time,end_time,break_minutes) VALUES (?,?,?,?,?,?)');
+  tx(() => {
+    db.prepare('SELECT id FROM employees ORDER BY id').all().forEach((e, i) => {
+      const id = tpl.run(e.id, eff).lastInsertRowid;
+      for (let d = 0; d < 7; d++) {
+        if (d === 0 || d === 6) { day.run(id, d, 1, null, null, 0); continue; }
+        if (i === 0) { // varied example: Mon 5a-3p, Tue 8a-5p, Wed-Fri 9a-6p
+          const [s, f] = d === 1 ? ['05:00', '15:00'] : d === 2 ? ['08:00', '17:00'] : ['09:00', '18:00'];
+          day.run(id, d, 0, s, f, 60); continue;
+        }
+        day.run(id, d, 0, i % 2 ? '08:00' : '09:00', i % 2 ? '17:00' : '18:00', 60);
+      }
+    });
+    setSetting('schedules_seeded', '1');
+  });
+}
+seedSchedules();
 
 module.exports = { db, tx, audit, hashPassword, verifyPassword, getSetting, setSetting, DB_PATH };

@@ -123,7 +123,7 @@ app.get('/api/meta', (req, res) => {
   res.json({
     campaigns: db.prepare('SELECT * FROM campaigns ORDER BY name').all(),
     supervisors: db.prepare("SELECT id, display_name, supervisor_code FROM users WHERE role='supervisor' AND active=1 ORDER BY display_name").all(),
-    attendance_codes: db.prepare('SELECT * FROM attendance_codes WHERE active=1 ORDER BY sort, code').all(),
+    attendance_codes: db.prepare('SELECT * FROM attendance_codes ORDER BY active DESC, sort, code').all(), // inactive kept so history still renders
     dispositions: db.prepare('SELECT * FROM dispositions WHERE active=1 ORDER BY label').all(),
     week_start_day: L.weekStartDay(),
     today: L.toIso(new Date()),
@@ -132,7 +132,7 @@ app.get('/api/meta', (req, res) => {
 
 // ---------------- roster ----------------
 const EMP_FIELDS = ['employee_id', 'first_name', 'last_name', 'campaign_id', 'supervisor_id', 'hire_date', 'production_start_date',
-  'phone_system_id', 'crm_system_id', 'ris_emr_system_id', 'wfm_system_id', 'qa_system_id', 'status', 'termination_date'];
+  'phone_system_id', 'crm_system_id', 'ris_emr_system_id', 'wfm_system_id', 'qa_system_id', 'modality', 'status', 'termination_date'];
 
 function cleanEmployee(b, partial = false) {
   const e = {};
@@ -143,6 +143,11 @@ function cleanEmployee(b, partial = false) {
   for (const d of ['hire_date', 'production_start_date', 'termination_date']) if (e[d] && !L.isIsoDate(e[d])) bad(`${d} must be YYYY-MM-DD`);
   if (e.hire_date && e.production_start_date && e.production_start_date < e.hire_date) bad('Production start date cannot be before hire date');
   if (e.campaign_id) e.campaign_id = Number(e.campaign_id);
+  if (e.modality) {
+    e.modality = String(e.modality).toUpperCase().replace(/[^A-Z]/g, '');
+    if (e.modality === 'ONSITE') e.modality = 'ONS';
+    if (!['WFH', 'ONS'].includes(e.modality)) bad('Modality must be WFH or ONS');
+  }
   if (!partial && !e.status) e.status = 'active';
   return e;
 }
@@ -264,7 +269,8 @@ app.get('/api/attendance', (req, res) => {
       .forEach((r) => { (marks[r.employee_id] ??= {})[r.work_date] = { code_id: r.code_id, note: r.note }; });
   }
   const hours = L.computeHours(emps.map((e) => e.id), from, to);
-  res.json({ days: L.daysBetween(from, to), employees: emps, marks, hours, locks: lockMap([...new Set(emps.map((e) => e.campaign_id).filter(Boolean))], from, to) });
+  const schedule = L.resolveSchedules(emps.map((e) => e.id), from, to);
+  res.json({ days: L.daysBetween(from, to), employees: emps, marks, hours, schedule, locks: lockMap([...new Set(emps.map((e) => e.campaign_id).filter(Boolean))], from, to) });
 });
 
 function setAttendance(user, { employee_id, work_date, code_id, note }) {
@@ -310,6 +316,7 @@ app.get('/api/time', (req, res) => {
       .forEach((r) => { (marks[r.employee_id] ??= {})[r.work_date] = { code_id: r.code_id }; });
   }
   res.json({ days: L.daysBetween(from, to), employees: emps, hours: L.computeHours(emps.map((e) => e.id), from, to), marks,
+    schedule: L.resolveSchedules(emps.map((e) => e.id), from, to),
     locks: lockMap([...new Set(emps.map((e) => e.campaign_id).filter(Boolean))], from, to) });
 });
 
@@ -469,6 +476,76 @@ app.get('/api/exports/:id/download', role(...MANAGERS), (req, res) => {
   res.send(body);
 });
 
+// ---------------- schedules ----------------
+app.get('/api/schedules', (req, res) => {
+  const { from, to } = rangeFromQuery(req.query);
+  const emps = L.scopedEmployees(req.user, { campaignId: req.query.campaign_id, supervisorId: req.query.supervisor_id });
+  const ids = emps.map((e) => e.id);
+  res.json({ days: L.daysBetween(from, to), employees: emps, schedule: L.resolveSchedules(ids, from, to), templates: L.templatesAsOf(ids, from) });
+});
+
+function scheduleEmployee(user, id) {
+  const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(id);
+  if (!L.canAccessEmployee(user, emp)) throw new HttpError(403, 'Employee not in your roster');
+  return emp;
+}
+
+// One-off change for specific dates: { entries: [{ employee_id, work_date, shift: {off}|{start,end,break_minutes} | null (= revert to weekly schedule), note }] }
+app.post('/api/schedules/days', (req, res) => {
+  const entries = Array.isArray(req.body?.entries) ? req.body.entries : bad('entries required');
+  if (entries.length > 5000) bad('Too many entries');
+  const touched = [];
+  tx(() => entries.forEach((x) => {
+    const emp = scheduleEmployee(req.user, x.employee_id);
+    if (!L.isIsoDate(x.work_date)) bad('Invalid date');
+    if (x.shift == null) { db.prepare('DELETE FROM schedule_overrides WHERE employee_id=? AND work_date=?').run(emp.id, x.work_date); }
+    else {
+      const sh = L.cleanShift(x.shift, bad);
+      db.prepare(`INSERT INTO schedule_overrides(employee_id,work_date,is_off,start_time,end_time,break_minutes,note,updated_by,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,datetime('now')) ON CONFLICT(employee_id,work_date) DO UPDATE SET is_off=excluded.is_off, start_time=excluded.start_time,
+        end_time=excluded.end_time, break_minutes=excluded.break_minutes, note=excluded.note, updated_by=excluded.updated_by, updated_at=excluded.updated_at`)
+        .run(emp.id, x.work_date, sh.is_off, sh.start_time, sh.end_time, sh.break_minutes, nz(x.note), req.user.id);
+    }
+    touched.push(emp.id);
+  }));
+  audit(req.user.id, 'schedule', null, 'days', { count: entries.length });
+  broadcast({ type: 'schedule' });
+  res.json({ applied: entries.length });
+});
+
+// Weekly pattern from a date onward: { effective_from, items: [{ employee_id | employee_code, days: { "0".."6": shift|null } }], clear_overrides }
+// Replaces any pattern starting on/after effective_from and ends the one in effect the day before.
+app.post('/api/schedules/templates', (req, res) => {
+  const { effective_from, items, clear_overrides } = req.body || {};
+  if (!L.isIsoDate(effective_from)) bad('effective_from must be YYYY-MM-DD');
+  if (!Array.isArray(items) || !items.length) bad('items required');
+  const errors = [];
+  let applied = 0;
+  tx(() => items.forEach((it, i) => {
+    try {
+      const emp = it.employee_id ? db.prepare('SELECT * FROM employees WHERE id = ?').get(it.employee_id)
+        : db.prepare('SELECT * FROM employees WHERE employee_id = ?').get(String(it.employee_code || '').trim());
+      if (!emp) bad(`Unknown employee ${it.employee_code ?? it.employee_id}`);
+      if (!L.canAccessEmployee(req.user, emp)) bad(`${emp.employee_id} is not in your roster`);
+      const days = {};
+      for (let d = 0; d < 7; d++) { const v = it.days?.[d] ?? it.days?.[String(d)]; if (v != null) days[d] = L.cleanShift(v, bad); }
+      db.prepare('DELETE FROM schedule_templates WHERE employee_id = ? AND effective_from >= ?').run(emp.id, effective_from);
+      db.prepare(`UPDATE schedule_templates SET effective_to = ? WHERE employee_id = ? AND effective_from < ? AND (effective_to IS NULL OR effective_to >= ?)`)
+        .run(L.addDays(effective_from, -1), emp.id, effective_from, effective_from);
+      if (Object.keys(days).length) {
+        const id = db.prepare('INSERT INTO schedule_templates(employee_id, effective_from, created_by) VALUES (?,?,?)').run(emp.id, effective_from, req.user.id).lastInsertRowid;
+        const ins = db.prepare('INSERT INTO schedule_template_days(template_id,dow,is_off,start_time,end_time,break_minutes) VALUES (?,?,?,?,?,?)');
+        for (const [d, v] of Object.entries(days)) ins.run(id, Number(d), v.is_off, v.start_time, v.end_time, v.break_minutes);
+      }
+      if (clear_overrides) db.prepare('DELETE FROM schedule_overrides WHERE employee_id = ? AND work_date >= ?').run(emp.id, effective_from);
+      applied++;
+    } catch (e) { if (!(e instanceof HttpError)) throw e; errors.push({ item: i, employee: it.employee_code ?? it.employee_id, error: e.message }); }
+  }));
+  audit(req.user.id, 'schedule', null, 'template', { effective_from, applied, errors: errors.length });
+  broadcast({ type: 'schedule' });
+  res.json({ applied, errors });
+});
+
 // ---------------- reporting ----------------
 // Flat fact table for the pivot: one row per employee-day that has an attendance mark and/or hours.
 // Compact encoding: rows are arrays; employees, campaigns and codes are sent once as lookups.
@@ -479,7 +556,7 @@ app.get('/api/reports/facts', (req, res) => {
   const emps = L.scopedEmployees(req.user, { includeInactive: true });
   const ids = emps.map((e) => e.id);
   const facts = new Map();
-  const get = (e, d) => { const k = e + '|' + d; let f = facts.get(k); if (!f) facts.set(k, (f = [e, d, null, 0, 0, 0, 0, 0])); return f; };
+  const get = (e, d) => { const k = e + '|' + d; let f = facts.get(k); if (!f) facts.set(k, (f = [e, d, null, 0, 0, 0, 0, 0, 0, 0])); return f; };
   if (ids.length) {
     db.prepare(`SELECT employee_id, work_date, code_id FROM attendance WHERE work_date BETWEEN ? AND ?
       AND employee_id IN (${ids.map(() => '?').join(',')})`).all(from, to, ...ids).forEach((r) => { get(r.employee_id, r.work_date)[2] = r.code_id; });
@@ -487,12 +564,22 @@ app.get('/api/reports/facts', (req, res) => {
     for (const [e, days] of Object.entries(hours)) for (const [d, c] of Object.entries(days)) {
       const f = get(Number(e), d); f[3] = c.raw; f[4] = c.adj; f[5] = c.total; f[6] = c.paid; f[7] = c.billable;
     }
+    // Scheduled working days are facts too (so unmarked, unworked scheduled days show up as gaps).
+    const sched = L.resolveSchedules(ids, from, to);
+    const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
+    for (const [e, days] of Object.entries(sched)) for (const [d, x] of Object.entries(days)) {
+      const emp = empById[e];
+      if (x.off) { if (facts.has(e + '|' + d)) get(Number(e), d)[9] = 0; continue; }
+      if (emp.status === 'terminated' && emp.termination_date && d > emp.termination_date) continue;
+      if (emp.hire_date && d < emp.hire_date) continue;
+      const f = get(Number(e), d); f[8] = x.hours; f[9] = 1;
+    }
   }
   res.json({
     from, to, week_start_day: L.weekStartDay(),
-    columns: ['employee', 'date', 'code_id', 'raw', 'adj', 'total', 'paid', 'billable'],
+    columns: ['employee', 'date', 'code_id', 'raw', 'adj', 'total', 'paid', 'billable', 'sched_hours', 'scheduled'],
     employees: emps.map((e) => ({ id: e.id, employee_id: e.employee_id, name: `${e.last_name}, ${e.first_name}`, campaign_id: e.campaign_id,
-      supervisor_id: e.supervisor_id, supervisor_name: e.supervisor_name, status: e.status, hire_date: e.hire_date, production_start_date: e.production_start_date })),
+      supervisor_id: e.supervisor_id, supervisor_name: e.supervisor_name, modality: e.modality, status: e.status, hire_date: e.hire_date, production_start_date: e.production_start_date })),
     campaigns: db.prepare('SELECT id, code, name, client FROM campaigns').all(),
     codes: db.prepare('SELECT id, code, label, counts_present, counts_absent, is_paid FROM attendance_codes').all(),
     rows: [...facts.values()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] - b[0])),

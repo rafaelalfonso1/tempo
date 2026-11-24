@@ -39,6 +39,7 @@ const S = {
 };
 const isManager = () => S.me && ['admin', 'operations'].includes(S.me.role);
 const codeById = (id) => S.meta.attendance_codes.find((c) => c.id === id);
+const activeCodes = () => S.meta.attendance_codes.filter((c) => c.active);
 
 function weekStartOf(s) { const diff = (dow(s) - S.meta.week_start_day + 7) % 7; return addDays(s, -diff); }
 function currentRange() {
@@ -81,7 +82,8 @@ function connectRealtime() {
       if (ev.by !== S.me.id) ev.changes.forEach((c) => $(`td.cell[data-e="${c.employee_id}"][data-d="${c.work_date}"]`)?.classList.add('flash'));
       return;
     }
-    if (route === 'reports' && ['attendance', 'hours', 'roster', 'meta'].includes(ev.type)) { RPT.loadedRange = null; return softReload(); }
+    if (route === 'reports' && ['attendance', 'hours', 'roster', 'meta', 'schedule'].includes(ev.type)) { RPT.loadedRange = null; return softReload(); }
+    if (ev.type === 'schedule' && ['schedules', 'attendance'].includes(route)) return softReload();
     if (ev.type === 'attendance' && route === 'time') return softReload();
     if (['hours', 'roster', 'approval'].includes(ev.type)) softReload();
   };
@@ -93,6 +95,7 @@ async function reloadMeta() { S.meta = await api('GET', '/api/meta'); }
 const ROUTES = [
   { id: 'attendance', label: 'Attendance', icon: '☑' },
   { id: 'time', label: 'Time & Hours', icon: '⏱' },
+  { id: 'schedules', label: 'Schedules', icon: '📅' },
   { id: 'roster', label: 'Roster', icon: '👥' },
   { id: 'reports', label: 'Reports', icon: '📊' },
   { id: 'approvals', label: 'Weekly Approval', icon: '✔', managers: true },
@@ -119,7 +122,7 @@ async function route() {
   if (!S.me) return;
   const r = currentRoute();
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.r === r));
-  const fn = { attendance: viewAttendance, time: viewTime, roster: viewRoster, reports: viewReports, approvals: viewApprovals, settings: viewSettings }[r] || viewAttendance;
+  const fn = { attendance: viewAttendance, time: viewTime, schedules: viewSchedules, roster: viewRoster, reports: viewReports, approvals: viewApprovals, settings: viewSettings }[r] || viewAttendance;
   try { await fn(); } catch (e) { toast(e.message, true); }
 }
 window.addEventListener('hashchange', () => { closeLayers(); route(); });
@@ -194,14 +197,14 @@ async function viewAttendance(searchOnly) {
   const main = $('#main');
   if (!searchOnly || !S.data) {
     const tb = matrixToolbar((s) => viewAttendance(s));
-    main.innerHTML = `<h1>Attendance</h1><p class="sub">Click a cell to mark attendance. Click a day header to mark every unmarked agent present. Changes appear for everyone in real time.</p>
+    main.innerHTML = `<h1>Attendance</h1><p class="sub">Click a cell to mark attendance. Click a day header to fill every unmarked agent: Present, or OFF if their schedule says they're off. Changes appear for everyone in real time.</p>
       ${tb.html}<div class="panel"><div class="table-wrap" id="grid"></div></div><div class="legend" id="legend"></div>`;
     tb.bind(main);
     S.data = await api('GET', '/api/attendance?' + matrixQuery());
     S.data.kind = 'attendance';
   }
   renderAttendanceGrid();
-  $('#legend').innerHTML = S.meta.attendance_codes.map((c) => `<span><span class="code" style="background:${esc(c.color)}">${esc(c.code)}</span> ${esc(c.label)}</span>`).join('') + '<span>🔒 / hatched = approved week (locked)</span>';
+  $('#legend').innerHTML = activeCodes().map((c) => `<span><span class="code" style="background:${esc(c.color)}">${esc(c.code)}</span> ${esc(c.label)}</span>`).join('') + '<span>🔒 / hatched = approved week (locked)</span>';
 }
 
 function renderAttendanceGrid() {
@@ -222,7 +225,7 @@ function renderAttendanceGrid() {
       if (c) { counts[c.id] = (counts[c.id] || 0) + 1; if (c.counts_present) present++; else if (c.counts_absent) absent++; }
       if (h) hrs += h.total;
       const locked = isLockedDay(e, d);
-      return `<td class="cell ${dayCls(d)} ${locked ? 'locked' : ''}" data-e="${e.id}" data-d="${d}" title="${esc(c ? c.label + (m.note ? ' — ' + m.note : '') : 'Not marked')}">
+      return `<td class="cell ${dayCls(d)} ${locked ? 'locked' : ''}" data-e="${e.id}" data-d="${d}" title="${esc((c ? c.label + (m.note ? ' — ' + m.note : '') : 'Not marked') + schedTip(e.id, d))}">
         ${c ? `<span class="code" style="background:${esc(c.color)}">${esc(c.code)}</span>` : ''}
         ${!month && h ? `<span class="hrs-mini">${fmtH(h.total)}h</span>` : ''}</td>`;
     }).join('');
@@ -243,11 +246,15 @@ function renderAttendanceGrid() {
   });
   $$('th[data-day]', grid).forEach((th) => th.onclick = guard(async () => {
     const d = th.dataset.day;
-    const present = S.meta.attendance_codes.find((c) => c.code === 'P') || S.meta.attendance_codes[0];
+    // Schedule-aware: agents scheduled OFF that day get the OFF code, everyone else Present.
+    const present = activeCodes().find((c) => c.code === 'P') || activeCodes()[0];
+    const offCode = activeCodes().find((c) => c.code === 'OFF');
     const targets = emps.filter((e) => !marks[e.id]?.[d] && !isLockedDay(e, d));
     if (!targets.length) return toast('Everyone is already marked for ' + shortDate(d));
-    if (!confirm(`Mark ${targets.length} unmarked agent(s) as "${present.label}" on ${prettyDate(d)}?`)) return;
-    const r = await api('POST', '/api/attendance/bulk', { entries: targets.map((e) => ({ employee_id: e.id, work_date: d, code_id: present.id })) });
+    const isOff = (e) => offCode && S.data.schedule?.[e.id]?.[d]?.off;
+    const nOff = targets.filter(isOff).length;
+    if (!confirm(`Fill ${prettyDate(d)} for ${targets.length} unmarked agent(s)?\n\n• ${targets.length - nOff} → ${present.code} (${present.label})${nOff ? `\n• ${nOff} scheduled off → ${offCode.code} (${offCode.label})` : ''}`)) return;
+    const r = await api('POST', '/api/attendance/bulk', { entries: targets.map((e) => ({ employee_id: e.id, work_date: d, code_id: isOff(e) ? offCode.id : present.id })) });
     toast(`Marked ${r.applied} agent(s)` + (r.errors.length ? `, ${r.errors.length} failed` : ''));
   }));
 }
@@ -255,11 +262,11 @@ function renderAttendanceGrid() {
 function openAttendancePop(td, emp, day) {
   closeLayers();
   const cur = S.data.marks[emp.id]?.[day];
-  const codes = S.meta.attendance_codes.filter((c) => !c.campaign_id || c.campaign_id === emp.campaign_id);
+  const codes = activeCodes().filter((c) => !c.campaign_id || c.campaign_id === emp.campaign_id);
   const pop = document.createElement('div');
   pop.className = 'pop';
   pop.innerHTML = `<div style="font-weight:600">${esc(emp.first_name)} ${esc(emp.last_name)}</div>
-    <div class="muted" style="font-size:12px;margin-bottom:8px">${prettyDate(day)}</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">${prettyDate(day)}${schedTip(emp.id, day).replace('\n', ' · ')}</div>
     <div class="codes">${codes.map((c) => `<button data-id="${c.id}" class="${cur?.code_id === c.id ? 'sel' : ''}"><span class="code" style="background:${esc(c.color)}">${esc(c.code)}</span>${esc(c.label)}</button>`).join('')}</div>
     <input type="text" id="pop-note" placeholder="Note (optional)" value="${esc(cur?.note || '')}" style="width:100%;margin-bottom:8px">
     <div style="display:flex;justify-content:space-between"><button class="btn sm danger" id="pop-clear" ${cur ? '' : 'disabled'}>Clear</button><span class="muted" style="font-size:11px">Tip: type a code letter</span></div>`;
@@ -273,18 +280,29 @@ function openAttendancePop(td, emp, day) {
   });
   $$('.codes button', pop).forEach((b) => b.onclick = () => save(Number(b.dataset.id)));
   $('#pop-clear', pop).onclick = () => save(null);
-  let typed = '';
+  // Type a code (P, LT, NCNS, MLUP…): saves as soon as it's unambiguous, or after a short pause.
+  let typed = '', timer;
   pop.addEventListener('keydown', (e) => {
     if (e.target.id === 'pop-note') { if (e.key === 'Enter' && cur) save(cur.code_id); return; }
-    if (e.key.length === 1) {
-      typed = (typed + e.key).toUpperCase().slice(-2);
-      const exact = codes.find((c) => c.code === typed) || codes.find((c) => c.code === e.key.toUpperCase());
-      const longer = codes.some((c) => c.code.length > typed.length && c.code.startsWith(typed));
-      if (exact && !longer) save(exact.id);
-    }
+    if (e.key === 'Enter') { const x = codes.find((c) => c.code === typed); if (x) save(x.id); return; }
+    if (e.key.length !== 1 || !/[a-z0-9]/i.test(e.key)) return;
+    clearTimeout(timer);
+    typed = (typed + e.key).toUpperCase();
+    if (!codes.some((c) => c.code.startsWith(typed))) typed = e.key.toUpperCase();
+    $$('.codes button', pop).forEach((b) => b.classList.toggle('typed', codes.find((c) => c.id === Number(b.dataset.id))?.code.startsWith(typed)));
+    const exact = codes.find((c) => c.code === typed);
+    const longer = codes.some((c) => c.code.length > typed.length && c.code.startsWith(typed));
+    if (exact && !longer) return save(exact.id);
+    if (exact) timer = setTimeout(() => save(exact.id), 700);
   });
   pop.tabIndex = -1; pop.focus();
   setTimeout(() => document.addEventListener('mousedown', function off(e) { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('mousedown', off); } }), 0);
+}
+
+function schedTip(empId, day) {
+  const sh = S.data?.schedule?.[empId]?.[day];
+  if (!sh) return '';
+  return '\n' + (sh.off ? 'Scheduled: off' : `Scheduled: ${SchedParse.label(sh)} (${fmtH(sh.hours)}h)`);
 }
 
 // ---------------------------------------------------------------- TIME
@@ -388,11 +406,11 @@ async function refreshTimeGrid() { if (currentRoute() === 'time') { S.data = awa
 // ---------------------------------------------------------------- ROSTER
 const EMP_FORM = [
   ['Identity', [['employee_id', 'Employee ID', 'text', true], ['first_name', 'First name', 'text', true], ['last_name', 'Last name', 'text', true], ['status', 'Status', 'status']]],
-  ['Assignment', [['campaign_id', 'Campaign', 'campaign'], ['supervisor_id', 'Supervisor ID', 'supervisor']]],
+  ['Assignment', [['campaign_id', 'Campaign', 'campaign'], ['supervisor_id', 'Supervisor ID', 'supervisor'], ['modality', 'Modality', 'modality']]],
   ['Dates', [['hire_date', 'Hire date', 'date'], ['production_start_date', 'Production start date', 'date'], ['termination_date', 'Termination date', 'date']]],
   ['System IDs', [['phone_system_id', 'Phone system ID', 'text'], ['crm_system_id', 'CRM system ID', 'text'], ['ris_emr_system_id', 'RIS / EMR system ID', 'text'], ['wfm_system_id', 'WFM system ID', 'text'], ['qa_system_id', 'QA system ID', 'text']]],
 ];
-let rosterFilter = { campaign: '', supervisor: '', status: 'current', search: '' };
+let rosterFilter = { campaign: '', supervisor: '', status: 'current', search: '', modality: '' };
 
 async function viewRoster() {
   const main = $('#main');
@@ -402,6 +420,7 @@ async function viewRoster() {
     <input type="search" id="r-search" placeholder="Search ID, name, phone ID…" value="${esc(rosterFilter.search)}">
     <select id="r-camp"><option value="">All campaigns</option>${m.campaigns.map((c) => `<option value="${c.id}" ${String(c.id) === rosterFilter.campaign ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
     ${isManager() ? `<select id="r-sup"><option value="">All supervisors</option>${m.supervisors.map((s) => `<option value="${esc(s.supervisor_code)}" ${s.supervisor_code === rosterFilter.supervisor ? 'selected' : ''}>${esc(s.display_name)} (${esc(s.supervisor_code)})</option>`).join('')}</select>` : ''}
+    <select id="r-mod"><option value="">All modalities</option>${['WFH', 'ONS'].map((x) => `<option ${x === rosterFilter.modality ? 'selected' : ''}>${x}</option>`).join('')}</select>
     <select id="r-status"><option value="current">Active &amp; on leave</option><option value="all" ${rosterFilter.status === 'all' ? 'selected' : ''}>Include terminated</option></select>
     <span class="grow"></span>
     <a class="btn" href="/api/employees/export.csv">Export CSV</a>
@@ -414,18 +433,19 @@ async function viewRoster() {
     if (rosterFilter.supervisor) p.set('supervisor_id', rosterFilter.supervisor);
     if (rosterFilter.status === 'all') p.set('include_inactive', '1');
     if (rosterFilter.search) p.set('search', rosterFilter.search);
-    const rows = await api('GET', '/api/employees?' + p);
-    $('#r-table').innerHTML = `<table><thead><tr><th>Employee ID</th><th>Name</th><th>Campaign</th><th>Supervisor</th><th>Hire</th><th>Prod. start</th><th>Phone</th><th>CRM</th><th>RIS/EMR</th><th>WFM</th><th>QA</th><th>Status</th></tr></thead>
+    const rows = (await api('GET', '/api/employees?' + p)).filter((e) => !rosterFilter.modality || e.modality === rosterFilter.modality);
+    $('#r-table').innerHTML = `<table><thead><tr><th>Employee ID</th><th>Name</th><th>Campaign</th><th>Supervisor</th><th>Modality</th><th>Hire</th><th>Prod. start</th><th>Phone</th><th>CRM</th><th>RIS/EMR</th><th>WFM</th><th>QA</th><th>Status</th></tr></thead>
       <tbody>${rows.map((e) => `<tr class="click" data-id="${e.id}"><td><b>${esc(e.employee_id)}</b></td><td>${esc(e.last_name)}, ${esc(e.first_name)}</td><td>${esc(e.campaign_name || '—')}</td>
-      <td>${esc(e.supervisor_name || '')} <span class="muted">${esc(e.supervisor_id || '')}</span></td><td>${esc(e.hire_date || '')}</td><td>${esc(e.production_start_date || '')}</td>
+      <td>${esc(e.supervisor_name || '')} <span class="muted">${esc(e.supervisor_id || '')}</span></td><td>${e.modality ? `<span class="tag">${esc(e.modality)}</span>` : ''}</td><td>${esc(e.hire_date || '')}</td><td>${esc(e.production_start_date || '')}</td>
       <td>${esc(e.phone_system_id || '')}</td><td>${esc(e.crm_system_id || '')}</td><td>${esc(e.ris_emr_system_id || '')}</td><td>${esc(e.wfm_system_id || '')}</td><td>${esc(e.qa_system_id || '')}</td>
-      <td><span class="tag ${e.status === 'active' ? 'ok' : e.status === 'leave' ? 'warn' : 'danger'}">${esc(e.status)}</span></td></tr>`).join('') || '<tr><td colspan="12" class="muted">No employees match.</td></tr>'}</tbody></table>`;
+      <td><span class="tag ${e.status === 'active' ? 'ok' : e.status === 'leave' ? 'warn' : 'danger'}">${esc(e.status)}</span></td></tr>`).join('') || '<tr><td colspan="13" class="muted">No employees match.</td></tr>'}</tbody></table>`;
     $$('#r-table tr[data-id]').forEach((tr) => tr.onclick = () => openEmployeeModal(rows.find((r) => r.id === Number(tr.dataset.id)), load));
   });
   $('#r-search').oninput = debounce((e) => { rosterFilter.search = e.target.value; load(); }, 250);
   $('#r-camp').onchange = (e) => { rosterFilter.campaign = e.target.value; load(); };
   if ($('#r-sup')) $('#r-sup').onchange = (e) => { rosterFilter.supervisor = e.target.value; load(); };
   $('#r-status').onchange = (e) => { rosterFilter.status = e.target.value; load(); };
+  $('#r-mod').onchange = (e) => { rosterFilter.modality = e.target.value; load(); };
   if ($('#r-add')) $('#r-add').onclick = () => openEmployeeModal(null, load);
   if ($('#r-import')) $('#r-import').onchange = guard(async (e) => {
     const file = e.target.files[0]; if (!file) return;
@@ -446,6 +466,7 @@ function openEmployeeModal(emp, onSaved) {
     let ctl;
     if (type === 'campaign') ctl = `<select name="${k}"><option value="">—</option>${S.meta.campaigns.map((c) => `<option value="${c.id}" ${c.id === v ? 'selected' : ''}>${esc(c.name)} (${esc(c.code)})</option>`).join('')}</select>`;
     else if (type === 'supervisor') ctl = `<select name="${k}"><option value="">—</option>${S.meta.supervisors.map((s) => `<option value="${esc(s.supervisor_code)}" ${s.supervisor_code === v ? 'selected' : ''}>${esc(s.supervisor_code)} — ${esc(s.display_name)}</option>`).join('')}${v && !S.meta.supervisors.some((s) => s.supervisor_code === v) ? `<option selected value="${esc(v)}">${esc(v)}</option>` : ''}</select>`;
+    else if (type === 'modality') ctl = `<select name="${k}"><option value="">—</option>${[['WFH', 'WFH — Work from home'], ['ONS', 'ONS — On site']].map(([a, b]) => `<option value="${a}" ${a === v ? 'selected' : ''}>${b}</option>`).join('')}</select>`;
     else if (type === 'status') ctl = `<select name="${k}">${['active', 'leave', 'terminated'].map((s) => `<option ${s === (v || 'active') ? 'selected' : ''}>${s}</option>`).join('')}</select>`;
     else ctl = `<input type="${type}" name="${k}" value="${esc(v)}" ${req ? 'required' : ''}>`;
     return `<label class="f">${label}${req ? ' *' : ''}${ctl}</label>`;

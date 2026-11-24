@@ -126,6 +126,74 @@ function billingLines(campaignId, weekStart) {
   return out.sort((a, b) => a.employee_id.localeCompare(b.employee_id) || a.work_date.localeCompare(b.work_date));
 }
 
+// ---------- schedules ----------
+const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+// Paid/scheduled hours of a shift; end <= start means it crosses midnight.
+function shiftHours(start, end, breakMin = 0) {
+  if (!start || !end) return 0;
+  let d = toMin(end) - toMin(start); if (d <= 0) d += 1440;
+  return round(Math.max(0, d - (breakMin || 0)) / 60);
+}
+const isTime = (t) => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+// Validates one day spec {off} or {start,end,break_minutes}. Returns a normalized object or throws via bad().
+function cleanShift(x, bad) {
+  if (!x || x.off || x.is_off) return { is_off: 1, start_time: null, end_time: null, break_minutes: 0 };
+  if (!isTime(x.start) || !isTime(x.end)) bad('Shift times must be HH:MM (24h)');
+  const br = Math.round(Number(x.break_minutes || 0));
+  if (!(br >= 0 && br <= 240)) bad('Break must be 0–240 minutes');
+  const h = shiftHours(x.start, x.end, br);
+  if (h <= 0 || h > 16) bad('A shift must be between 0 and 16 hours long');
+  return { is_off: 0, start_time: x.start, end_time: x.end, break_minutes: br };
+}
+
+// Resolve the effective schedule per employee per date: day override > weekly template in effect.
+// Returns { [empId]: { [date]: { off, start, end, break_minutes, hours, source } } }
+function resolveSchedules(employeeIds, from, to) {
+  const out = {};
+  if (!employeeIds.length) return out;
+  const ph = employeeIds.map(() => '?').join(',');
+  const tpls = db.prepare(`SELECT * FROM schedule_templates WHERE employee_id IN (${ph}) AND effective_from <= ?
+    AND (effective_to IS NULL OR effective_to >= ?) ORDER BY employee_id, effective_from`).all(...employeeIds, to, from);
+  const days = {};
+  if (tpls.length) db.prepare(`SELECT * FROM schedule_template_days WHERE template_id IN (${tpls.map(() => '?').join(',')})`)
+    .all(...tpls.map((t) => t.id)).forEach((d) => { (days[d.template_id] ??= {})[d.dow] = d; });
+  const byEmp = {};
+  for (const t of tpls) (byEmp[t.employee_id] ??= []).push(t);
+  const ovr = {};
+  db.prepare(`SELECT * FROM schedule_overrides WHERE employee_id IN (${ph}) AND work_date BETWEEN ? AND ?`).all(...employeeIds, from, to)
+    .forEach((o) => { (ovr[o.employee_id] ??= {})[o.work_date] = o; });
+  const dates = daysBetween(from, to);
+  const fmt = (r, source) => r.is_off
+    ? { off: true, hours: 0, source }
+    : { off: false, start: r.start_time, end: r.end_time, break_minutes: r.break_minutes, hours: shiftHours(r.start_time, r.end_time, r.break_minutes), source };
+  for (const e of employeeIds) {
+    const list = byEmp[e] || [];
+    for (const d of dates) {
+      const o = ovr[e]?.[d];
+      if (o) { (out[e] ??= {})[d] = { ...fmt(o, 'override'), note: o.note }; continue; }
+      let t = null;
+      for (const x of list) if (x.effective_from <= d && (!x.effective_to || x.effective_to >= d)) t = x; // latest wins
+      const day = t && days[t.id]?.[toDate(d).getUTCDay()];
+      if (day) (out[e] ??= {})[d] = fmt(day, 'template');
+    }
+  }
+  return out;
+}
+
+// Current weekly template (as of a date) per employee: { [empId]: { effective_from, days: {dow: {...}} } }
+function templatesAsOf(employeeIds, date) {
+  const out = {};
+  if (!employeeIds.length) return out;
+  const ph = employeeIds.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT * FROM schedule_templates WHERE employee_id IN (${ph}) AND effective_from <= ?
+    AND (effective_to IS NULL OR effective_to >= ?) ORDER BY effective_from`).all(...employeeIds, date, date);
+  for (const t of rows) out[t.employee_id] = { id: t.id, effective_from: t.effective_from, days: {} };
+  const ids = Object.values(out).map((t) => t.id);
+  if (ids.length) db.prepare(`SELECT * FROM schedule_template_days WHERE template_id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+    .forEach((d) => { const t = Object.values(out).find((x) => x.id === d.template_id); t.days[d.dow] = d.is_off ? { off: true } : { start: d.start_time, end: d.end_time, break_minutes: d.break_minutes }; });
+  return out;
+}
+
 function toCsv(rows) {
   if (!rows.length) return '';
   const cols = Object.keys(rows[0]);
@@ -133,4 +201,4 @@ function toCsv(rows) {
   return [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\n') + '\n';
 }
 
-module.exports = { toIso, addDays, isIsoDate, weekStartOf, weekStartDay, daysBetween, scopedEmployees, canAccessEmployee, isLocked, computeHours, payrollLines, billingLines, toCsv, round };
+module.exports = { resolveSchedules, templatesAsOf, cleanShift, shiftHours, toIso, addDays, isIsoDate, weekStartOf, weekStartDay, daysBetween, scopedEmployees, canAccessEmployee, isLocked, computeHours, payrollLines, billingLines, toCsv, round };

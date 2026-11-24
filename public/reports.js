@@ -23,6 +23,7 @@ const R_FIELDS = [
   { id: 'supervisor', label: 'Supervisor', group: 'Organization', type: 'dim', key: (f) => f.supervisor },
   { id: 'agent', label: 'Agent', group: 'Organization', type: 'dim', key: (f) => f.agent },
   { id: 'employee_id', label: 'Employee ID', group: 'Organization', type: 'dim', key: (f) => f.employee_id },
+  { id: 'modality', label: 'Modality (WFH / ONS)', group: 'Organization', type: 'dim', key: (f) => f.modality },
   { id: 'emp_status', label: 'Employee status', group: 'Organization', type: 'dim', key: (f) => f.status },
   { id: 'tenure', label: 'Tenure (from production start)', group: 'Organization', type: 'dim', key: (f) => f.tenure, sort: (v) => TENURE.indexOf(v) },
   // Attendance
@@ -39,6 +40,12 @@ const R_FIELDS = [
   { id: 'paid', label: 'Paid hours', group: 'Time', type: 'measure', base: 'paid', fmt: 'h' },
   { id: 'billable', label: 'Billable hours', group: 'Time', type: 'measure', base: 'billable', fmt: 'h' },
   { id: 'bill_pct', label: 'Billable %', group: 'Time', type: 'measure', kind: 'ratio', num: 'billable', den: 'total', fmt: 'pct' },
+  // Schedule
+  { id: 'sched_hours', label: 'Scheduled hours', group: 'Schedule', type: 'measure', base: 'sched_hours', fmt: 'h' },
+  { id: 'sched_days', label: 'Days scheduled', group: 'Schedule', type: 'measure', base: 'scheduled', fmt: 'int' },
+  { id: 'sched_adh', label: 'Hours vs schedule %', group: 'Schedule', type: 'measure', kind: 'ratio', num: 'total', den: 'sched_hours', fmt: 'pct', help: 'Total hours ÷ scheduled hours' },
+  { id: 'sched_show', label: 'Scheduled days worked %', group: 'Schedule', type: 'measure', kind: 'ratio', num: 'sched_worked', den: 'scheduled', fmt: 'pct', help: 'Of the days an agent was scheduled to work, the share they actually worked (present or with hours)' },
+  { id: 'sched_missing', label: 'Scheduled days not marked', group: 'Schedule', type: 'measure', base: 'sched_unmarked', fmt: 'int', help: 'Scheduled working days with no attendance mark' },
   // Productivity
   { id: 'productivity', label: 'Productivity (hrs / day worked)', group: 'Productivity', type: 'measure', kind: 'ratio', num: 'total', den: 'worked', fmt: 'h', help: 'Total hours ÷ days worked, for whatever group and period the cell covers' },
   { id: 'hrs_agent', label: 'Hours per agent', group: 'Productivity', type: 'measure', kind: 'ratio', num: 'total', den: '@agents', fmt: 'h' },
@@ -46,7 +53,7 @@ const R_FIELDS = [
   { id: 'records', label: 'Agent-days (records)', group: 'Productivity', type: 'measure', kind: 'count', fmt: 'int' },
 ];
 const RF = Object.fromEntries(R_FIELDS.map((f) => [f.id, f]));
-const BASES = ['raw', 'adj', 'total', 'paid', 'billable', 'present', 'absent', 'worked', 'marked'];
+const BASES = ['raw', 'adj', 'total', 'paid', 'billable', 'present', 'absent', 'worked', 'marked', 'sched_hours', 'scheduled', 'sched_worked', 'sched_unmarked'];
 const AGGS = { sum: 'Sum', avg: 'Average', min: 'Min', max: 'Max', count: 'Count' };
 const DIM_AGGS = { distinct: 'Distinct count', count: 'Count' };
 const defaultAgg = (f) => (f.type === 'dim' ? 'distinct' : f.kind ? 'value' : 'sum');
@@ -82,6 +89,8 @@ const BUILTIN_REPORTS = [
   { name: 'Daily attendance', config: { range: 'this_month', rows: ['date'], cols: [], values: [{ field: 'agents', agg: 'value' }, { field: 'present', agg: 'sum' }, { field: 'absent', agg: 'sum' }, { field: 'att_rate', agg: 'value' }, { field: 'total', agg: 'sum' }], filters: [], sort: { by: 'label', dir: 1 }, heat: false } },
   { name: 'Client billing summary', config: { range: 'last_week', rows: ['client', 'campaign'], cols: [], values: [{ field: 'billable', agg: 'sum' }, { field: 'paid', agg: 'sum' }, { field: 'total', agg: 'sum' }, { field: 'bill_pct', agg: 'value' }], filters: [], sort: { by: 'label', dir: 1 }, heat: false } },
   { name: 'Attendance codes by agent', config: { range: 'this_month', rows: ['agent'], cols: ['att_code'], values: [{ field: 'records', agg: 'value' }], filters: [], sort: { by: 'label', dir: 1 }, heat: true } },
+  { name: 'Schedule adherence by supervisor', config: { range: 'last_week', rows: ['supervisor', 'agent'], cols: [], values: [{ field: 'sched_hours', agg: 'sum' }, { field: 'total', agg: 'sum' }, { field: 'sched_adh', agg: 'value' }, { field: 'sched_show', agg: 'value' }, { field: 'sched_missing', agg: 'sum' }], filters: [], sort: { by: 'label', dir: 1 }, heat: true } },
+  { name: 'Hours by modality', config: { range: 'this_month', rows: ['modality', 'campaign'], cols: [], values: [{ field: 'agents', agg: 'value' }, { field: 'total', agg: 'sum' }, { field: 'productivity', agg: 'value' }, { field: 'att_rate', agg: 'value' }], filters: [], sort: { by: 'label', dir: 1 }, heat: false } },
   { name: 'Productivity by weekday', config: { range: 'last_90', rows: ['weekday'], cols: ['campaign'], values: [{ field: 'productivity', agg: 'value' }], filters: [], sort: { by: 'label', dir: 1 }, heat: true } },
 ];
 
@@ -98,7 +107,7 @@ function hydrateFacts(d) {
   const emps = Object.fromEntries(d.employees.map((e) => [e.id, e]));
   const camps = Object.fromEntries(d.campaigns.map((c) => [c.id, c]));
   const codes = Object.fromEntries(d.codes.map((c) => [c.id, c]));
-  return d.rows.map(([eid, date, codeId, raw, adj, total, paid, billable]) => {
+  return d.rows.map(([eid, date, codeId, raw, adj, total, paid, billable, schedHours = 0, scheduled = 0]) => {
     const e = emps[eid] || {}; const c = camps[e.campaign_id] || {}; const code = codes[codeId];
     const present = code?.counts_present ? 1 : 0, absent = code?.counts_absent ? 1 : 0;
     const dt = new Date(date + 'T00:00:00Z');
@@ -112,10 +121,11 @@ function hydrateFacts(d) {
       empId: eid, date, dow: dt.getUTCDay(), week: weekStartOf(date),
       agent: e.name || '(unknown)', employee_id: e.employee_id || '', status: e.status || '',
       campaign: c.name || '(no campaign)', client: c.client || '(no client)',
-      supervisor: e.supervisor_name || e.supervisor_id || '(no supervisor)', tenure,
+      supervisor: e.supervisor_name || e.supervisor_id || '(no supervisor)', tenure, modality: e.modality || '(not set)',
       code: code ? `${code.code} — ${code.label}` : '(not marked)',
       raw, adj, total, paid, billable, present, absent,
       worked: present || total > 0 ? 1 : 0, marked: present + absent,
+      sched_hours: schedHours, scheduled, sched_worked: scheduled && (present || total > 0) ? 1 : 0, sched_unmarked: scheduled && !code ? 1 : 0,
     };
   });
 }
@@ -465,9 +475,9 @@ function showDrill(path, ck) {
   const title = [...rparts.map((v, i) => dimLabel(cfg.rows[i], v)), ...(cparts || []).map((v, i) => dimLabel(cfg.cols[i], v))].join(' · ') || 'All records';
   const shown = recs.slice(0, 1000);
   md.innerHTML = `<div class="head-row"><div><h2>${esc(title)}</h2><div class="muted">${recs.length.toLocaleString()} agent-day record(s)${recs.length > 1000 ? ' — showing first 1,000' : ''}</div></div><button class="x">×</button></div>
-    <div class="table-wrap" style="max-height:60vh"><table><thead><tr><th>Date</th><th>Agent</th><th>Employee ID</th><th>Campaign</th><th>Supervisor</th><th>Attendance</th><th class="num">Raw</th><th class="num">Adj.</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Billable</th></tr></thead><tbody>
+    <div class="table-wrap" style="max-height:60vh"><table><thead><tr><th>Date</th><th>Agent</th><th>Employee ID</th><th>Campaign</th><th>Supervisor</th><th>Attendance</th><th class="num">Sched.</th><th class="num">Raw</th><th class="num">Adj.</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Billable</th></tr></thead><tbody>
     ${shown.map((f) => `<tr><td>${esc(f.date)}</td><td>${esc(f.agent)}</td><td>${esc(f.employee_id)}</td><td>${esc(f.campaign)}</td><td>${esc(f.supervisor)}</td><td>${esc(f.code)}</td>
-      <td class="num">${fmtH(f.raw)}</td><td class="num">${fmtH(f.adj)}</td><td class="num">${fmtH(f.total)}</td><td class="num">${fmtH(f.paid)}</td><td class="num">${fmtH(f.billable)}</td></tr>`).join('')}</tbody></table></div>`;
+      <td class="num">${f.scheduled ? fmtH(f.sched_hours) : ''}</td><td class="num">${fmtH(f.raw)}</td><td class="num">${fmtH(f.adj)}</td><td class="num">${fmtH(f.total)}</td><td class="num">${fmtH(f.paid)}</td><td class="num">${fmtH(f.billable)}</td></tr>`).join('')}</tbody></table></div>`;
   document.body.append(ov, md);
   $('.x', md).onclick = closeLayers;
 }

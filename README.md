@@ -35,7 +35,7 @@ The first run creates `data/tna.db` with demo data:
 ## Modules
 
 ### 1. Roster
-- Fields: Employee ID, first/last name, campaign, Supervisor ID, hire date, production start date, plus the Phone, CRM, RIS/EMR, WFM and QA system IDs. Each employee also has a status (active / leave / terminated).
+- Fields: Employee ID, first/last name, campaign, Supervisor ID, **modality (WFH = work from home, ONS = on site)**, hire date, production start date, plus the Phone, CRM, RIS/EMR, WFM and QA system IDs. Each employee also has a status (active / leave / terminated).
 - Add or edit employees in a form, import a CSV in bulk (it creates new rows or updates existing ones by Employee ID), and export to CSV.
 - Every change is audited field by field. Open an employee and click "View change history".
 - A supervisor sees an agent when the agent's **Supervisor ID** matches the supervisor user's **supervisor code**.
@@ -44,9 +44,42 @@ The first run creates `data/tna.db` with demo data:
 - Rows are agents and columns are days. **Week** view is the default; **Month** view adds totals per attendance code.
 - Use ‹ › to move between weeks or months, and **Today** to jump back. You can filter by campaign or supervisor and search for an agent.
 - Click a cell to pick a code and add an optional note. You can also type the code letter (P, A, V…).
-- Click a day header to mark every unmarked agent **Present** in one go.
+- Click a day header to fill every unmarked agent in one go: **P**, or **OFF** for agents whose schedule has them off that day.
 - **Real time:** changes reach every open screen instantly over Server-Sent Events, and the changed cells flash.
-- Attendance codes can be configured (Settings → Attendance codes): color, whether the code counts as present, whether it is paid, and which campaign it applies to.
+- Attendance codes can be configured (Settings → Attendance codes): color, whether the code counts as present or absent, whether it is paid, and which campaign it applies to. The default list:
+
+  | Code | Reason | Counts as |
+  |---|---|---|
+  | P | Present | present |
+  | LT | Late | present |
+  | NCNS | No Call No Show | absent |
+  | A | Absent | absent |
+  | LOA | Leave of Absence | neither (planned) |
+  | MLP | Planned Medical License | neither (planned) |
+  | MLUP | Unplanned Medical License | absent |
+  | V | Vacation | neither (paid) |
+  | VTO | Voluntary Time Off | neither |
+  | OFF | Off agents | neither |
+  | PTO | Paid Time Off | neither (paid) |
+
+  When an existing database is upgraded, old marks are kept: Tardy becomes LT, No-show becomes NCNS and Day off becomes OFF. Codes that aren't on the list are deactivated but still show on past days.
+
+### Schedules
+- **The matrix:** rows are agents and columns are days, in a week or month view, using the same roster, filters and search as Attendance. Each cell shows the shift, its hours and any break; the right column totals scheduled hours, and the footer counts agents scheduled per day.
+- **Shift formats:** shifts can be typed in whatever format people already use; a live preview shows how the app read it.
+  - `8-5`, `5-3`, `8a-5p`, `8:30am-5:15pm`, `0800-1700`, `9 to 6`, `8 a 5`
+  - overnight shifts: `22-6`, `10p-6a`
+  - breaks: `8-5 30m`, `8-5 (1h)`, `8-5 lunch 60`
+  - days off: `off`, `libre`, `x`
+  - When am/pm is missing, the app picks the sensible reading (1–16 hours): `5-3` = 5 a.m.–3 p.m., `2-11` = 2 p.m.–11 p.m.
+- **Every day can be different.** A weekly pattern holds a separate shift (or OFF) for each weekday. Examples: Monday 5a–3p, Tuesday 8a–5p, Wednesday–Friday 9a–6p.
+- **Ways to enter schedules:**
+  1. **Click a cell** and type a shift. *Enter* saves it as a one-off change for that date only (shown with a dot). *Shift+Enter* changes that weekday every week from that date on.
+  2. **Click an agent's name**, or tick several agents, and choose **Set weekly schedule**. Type the shift for each day, or describe the whole week in one line, in English or Spanish: `Mon-Fri 8a-5p; Sat 9-1; Sun off`, `Mon 5-3, Tue 8-5, Wed-Fri 9-6 30m`, `Lun a Vie 8-5, Sab libre`.
+  3. **Paste from Excel:** copy a block with the Employee ID and one column per day. A header row with day names is optional. The app shows a preview and flags any cell it can't read before importing.
+  4. **Export CSV** of the current view.
+- **Effective dates:** a weekly pattern applies from its *effective date* until it is changed. Earlier weeks keep their old schedule, so history and reports stay correct. One-off changes always win over the pattern for their date.
+- **Where schedules are used:** they feed Attendance (each cell's tooltip and the day-header fill) and Reports (the measures below).
 
 ### 3. Time & Hours
 - The same matrix layout shows each agent's hours per day, with daily, weekly, paid and billable totals.
@@ -77,12 +110,12 @@ The first run creates `data/tna.db` with demo data:
 - **Dry run:** until a connector is configured, it runs in dry-run mode and produces the file without sending anything.
 
 ### 5. Reports (pivot table)
-Reports works like an Excel pivot table over **agent-days**: one record per agent per day that has an attendance mark and/or hours.
+Reports works like an Excel pivot table over **agent-days**: one record per agent per day that has an attendance mark, hours, or a scheduled shift.
 
 - **Fields:** check a field in the field list to add it, or drag it into **Rows**, **Columns**, **Values** or **Filters**. Drag a chip to reorder it or move it to another area; drag it back to the field list, or click ×, to remove it.
   - **Group by (Aa):**
     - date, week, month, year, weekday
-    - client, campaign, supervisor, agent, employee ID, employee status
+    - client, campaign, supervisor, agent, employee ID, **modality (WFH / ONS)**, employee status
     - tenure since production start
     - attendance code
   - **Measures (Σ / %):**
@@ -90,6 +123,7 @@ Reports works like an Excel pivot table over **agent-days**: one record per agen
     - days present, days absent, days worked
     - attendance %, absenteeism %, billable %
     - **productivity**, hours per agent, distinct agents, agent-days
+    - **schedule:** scheduled hours, days scheduled, hours vs schedule %, scheduled days worked %, scheduled days not marked
 - **Summarizing:** switch any measure between Sum, Average, Min, Max and Count. A dimension placed in Values gives a Distinct count or a Count.
 - **Productivity** = total hours ÷ days worked, where a *day worked* is a day marked present **or** with hours > 0. It is recalculated for every cell, subtotal and grand total, so it is correct at any level of grouping and for any period.
 - **Attendance %** = present ÷ (present + absent). Which codes count as present or absent is set per code in Settings → Attendance codes. Days off, vacation and holidays count as neither.
@@ -149,7 +183,8 @@ server/index.js        REST API, auth/roles, SSE real-time, ingestion, approvals
 server/lib.js          Date/week logic, roster scoping, locking, hours / payroll / billing calculations
 server/connectors.js   Billing, Acon (SQL Server) and SPN (REST) connectors with dry-run fallback
 server/db.js           Schema + demo seed (plain SQL, portable to SQL Server)
-public/                Single-page UI (vanilla JS, no build step); reports.js = pivot engine
+public/                Single-page UI (vanilla JS, no build step); reports.js = pivot engine,
+                       schedules.js = schedule screens, schedule-parse.js = flexible shift parser
 integration/           SQL query template, sync jobs, Acon staging table
 test/                  End-to-end API tests (node --test)
 ```

@@ -195,3 +195,24 @@ table.pivot tbody tr:hover td, table.pivot tbody tr:hover th.pv-label { box-shad
 .filter-pop { width: 270px; }
 .filter-pop .fvals { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
 @media (max-width: 1100px) { .pivot-layout { grid-template-columns: 1fr; } .pivot-pane { position: static; max-height: none; } }
+
+/* schedules */
+.matrix .selcol { width: 32px; min-width: 32px; padding: 0 6px; position: sticky; left: 0; z-index: 2; background: var(--panel); }
+.matrix th.selcol { z-index: 4; }
+.matrix .selcol + .emp { left: 32px; }
+.matrix .emp-link { cursor: pointer; }
+.matrix .emp-link:hover { color: var(--accent); text-decoration: underline; }
+.sched-shift { display: block; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.sched-off { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .04em; }
+.sched-prev { font-size: 12px; margin-top: 6px; min-height: 18px; }
+.err { color: var(--danger); }
+td.err { background: var(--danger-soft); }
+.sp-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.wk-table { width: 100%; margin: 12px 0; }
+.wk-table th { position: static; text-align: left; width: 110px; font-size: 13px; color: var(--text); background: none; }
+.wk-table td { padding: 4px 8px; }
+.wk-table input { width: 100%; }
+.wk-prev { font-size: 12px; white-space: nowrap; width: 200px; }
+.pop .codes button.typed { border-color: var(--accent); }
+.pop:has(.codes) { width: 320px; }
+.pop .codes .code { flex-shrink: 0; min-width: 40px; text-align: center; }
