@@ -469,6 +469,70 @@ app.get('/api/exports/:id/download', role(...MANAGERS), (req, res) => {
   res.send(body);
 });
 
+// ---------------- reporting ----------------
+// Flat fact table for the pivot: one row per employee-day that has an attendance mark and/or hours.
+// Compact encoding: rows are arrays; employees, campaigns and codes are sent once as lookups.
+app.get('/api/reports/facts', (req, res) => {
+  const { from, to } = req.query;
+  if (!L.isIsoDate(from) || !L.isIsoDate(to) || from > to) bad('from/to must be valid YYYY-MM-DD dates');
+  if (L.daysBetween(from, to).length > 366) bad('Range too large (max 366 days)');
+  const emps = L.scopedEmployees(req.user, { includeInactive: true });
+  const ids = emps.map((e) => e.id);
+  const facts = new Map();
+  const get = (e, d) => { const k = e + '|' + d; let f = facts.get(k); if (!f) facts.set(k, (f = [e, d, null, 0, 0, 0, 0, 0])); return f; };
+  if (ids.length) {
+    db.prepare(`SELECT employee_id, work_date, code_id FROM attendance WHERE work_date BETWEEN ? AND ?
+      AND employee_id IN (${ids.map(() => '?').join(',')})`).all(from, to, ...ids).forEach((r) => { get(r.employee_id, r.work_date)[2] = r.code_id; });
+    const hours = L.computeHours(ids, from, to);
+    for (const [e, days] of Object.entries(hours)) for (const [d, c] of Object.entries(days)) {
+      const f = get(Number(e), d); f[3] = c.raw; f[4] = c.adj; f[5] = c.total; f[6] = c.paid; f[7] = c.billable;
+    }
+  }
+  res.json({
+    from, to, week_start_day: L.weekStartDay(),
+    columns: ['employee', 'date', 'code_id', 'raw', 'adj', 'total', 'paid', 'billable'],
+    employees: emps.map((e) => ({ id: e.id, employee_id: e.employee_id, name: `${e.last_name}, ${e.first_name}`, campaign_id: e.campaign_id,
+      supervisor_id: e.supervisor_id, supervisor_name: e.supervisor_name, status: e.status, hire_date: e.hire_date, production_start_date: e.production_start_date })),
+    campaigns: db.prepare('SELECT id, code, name, client FROM campaigns').all(),
+    codes: db.prepare('SELECT id, code, label, counts_present, counts_absent, is_paid FROM attendance_codes').all(),
+    rows: [...facts.values()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] - b[0])),
+  });
+});
+
+app.get('/api/reports/saved', (req, res) => {
+  res.json(db.prepare(`SELECT r.*, u.display_name AS owner_name FROM saved_reports r JOIN users u ON u.id = r.owner_id
+    WHERE r.owner_id = ? OR r.shared = 1 ORDER BY r.name`).all(req.user.id).map((r) => ({ ...r, config: JSON.parse(r.config) })));
+});
+function cleanReport(b) {
+  const name = String(b.name || '').trim();
+  if (!name) bad('Report name is required');
+  if (!b.config || typeof b.config !== 'object') bad('config is required');
+  const config = JSON.stringify(b.config);
+  if (config.length > 20000) bad('Report layout too large');
+  return { name: name.slice(0, 120), config, shared: b.shared ? 1 : 0 };
+}
+app.post('/api/reports/saved', (req, res) => {
+  const r = cleanReport(req.body || {});
+  const id = db.prepare('INSERT INTO saved_reports(name, config, owner_id, shared) VALUES (?,?,?,?)').run(r.name, r.config, req.user.id, r.shared).lastInsertRowid;
+  res.json({ id: Number(id) });
+});
+function ownedReport(req) {
+  const r = db.prepare('SELECT * FROM saved_reports WHERE id = ?').get(req.params.id);
+  if (!r) throw new HttpError(404, 'Report not found');
+  if (r.owner_id !== req.user.id && req.user.role !== 'admin') throw new HttpError(403, 'Only the owner can change this report');
+  return r;
+}
+app.put('/api/reports/saved/:id', (req, res) => {
+  const r = ownedReport(req); const v = cleanReport(req.body || {});
+  db.prepare("UPDATE saved_reports SET name=?, config=?, shared=?, updated_at=datetime('now') WHERE id=?").run(v.name, v.config, v.shared, r.id);
+  res.json({ ok: true });
+});
+app.delete('/api/reports/saved/:id', (req, res) => {
+  const r = ownedReport(req);
+  db.prepare('DELETE FROM saved_reports WHERE id = ?').run(r.id);
+  res.json({ ok: true });
+});
+
 // ---------------- ingestion admin ----------------
 app.get('/api/ingest/batches', role(...MANAGERS), (req, res) => {
   res.json(db.prepare('SELECT * FROM ingest_batches ORDER BY id DESC LIMIT 50').all());
@@ -501,8 +565,12 @@ const req01 = (v, k) => { if (k in v && v[k] !== null) v[k] = v[k] === true || v
 const need = (v, isNew, ...keys) => { for (const k of keys) if ((isNew || k in v) && !v[k]) bad(`${k} is required`); };
 
 crud('campaigns', ['code', 'name', 'client', 'billing_code', 'active'], { roles: MANAGERS, validate: (v, n) => { need(v, n, 'code', 'name'); req01(v, 'active'); } });
-crud('attendance_codes', ['code', 'label', 'color', 'counts_present', 'is_paid', 'campaign_id', 'sort', 'active'], {
-  roles: MANAGERS, validate: (v, n) => { need(v, n, 'code', 'label'); ['counts_present', 'is_paid', 'active'].forEach((k) => req01(v, k)); },
+crud('attendance_codes', ['code', 'label', 'color', 'counts_present', 'counts_absent', 'is_paid', 'campaign_id', 'sort', 'active'], {
+  roles: MANAGERS,
+  validate: (v, n) => {
+    need(v, n, 'code', 'label'); ['counts_present', 'counts_absent', 'is_paid', 'active'].forEach((k) => req01(v, k));
+    if (v.counts_present && v.counts_absent) bad('A code cannot count as both present and absent');
+  },
 });
 crud('dispositions', ['campaign_id', 'code', 'label', 'description', 'direction', 'is_paid', 'is_billable', 'payroll_code', 'requires_note', 'active'], {
   roles: MANAGERS,

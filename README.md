@@ -76,6 +76,36 @@ The first run creates `data/tna.db` with demo data:
 - Every export is kept as a batch you can download again (CSV, plus the SQL script or JSON).
 - **Dry run:** until a connector is configured, it runs in dry-run mode and produces the file without sending anything.
 
+### 5. Reports (pivot table)
+Reports works like an Excel pivot table over **agent-days**: one record per agent per day that has an attendance mark and/or hours.
+
+- **Fields:** check a field in the field list to add it, or drag it into **Rows**, **Columns**, **Values** or **Filters**. Drag a chip to reorder it or move it to another area; drag it back to the field list, or click ×, to remove it.
+  - **Group by (Aa):**
+    - date, week, month, year, weekday
+    - client, campaign, supervisor, agent, employee ID, employee status
+    - tenure since production start
+    - attendance code
+  - **Measures (Σ / %):**
+    - total, raw, adjustment, paid and billable hours
+    - days present, days absent, days worked
+    - attendance %, absenteeism %, billable %
+    - **productivity**, hours per agent, distinct agents, agent-days
+- **Summarizing:** switch any measure between Sum, Average, Min, Max and Count. A dimension placed in Values gives a Distinct count or a Count.
+- **Productivity** = total hours ÷ days worked, where a *day worked* is a day marked present **or** with hours > 0. It is recalculated for every cell, subtotal and grand total, so it is correct at any level of grouping and for any period.
+- **Attendance %** = present ÷ (present + absent). Which codes count as present or absent is set per code in Settings → Attendance codes. Days off, vacation and holidays count as neither.
+- **Layout:**
+  - multi-level rows with subtotals that you can expand or collapse, and a grand total row and column
+  - sort by row label or by any value
+  - optional color scale, like Excel's conditional formatting
+- **Show details:** double-click any cell to see the agent-day records behind it, the same as Excel's "Show Details".
+- **Date range:** presets (this week, last month, last 90 days, year to date…) or a custom range of up to 366 days.
+- **Saving and exporting:**
+  - Six standard reports are included.
+  - Users can save their own layouts, and operations/admin can share layouts with everyone.
+  - **Export CSV** writes the full pivot, including collapsed rows.
+- **Who sees what:** supervisors only see their own agents in reports.
+- **Note:** supervisor, campaign and client come from the roster's *current* assignment. If an agent moves teams, their past days move with them.
+
 ## Hours ingestion (SQL Server → app)
 
 Files in `integration/` (they can also be downloaded from Settings → Integrations):
@@ -119,7 +149,7 @@ server/index.js        REST API, auth/roles, SSE real-time, ingestion, approvals
 server/lib.js          Date/week logic, roster scoping, locking, hours / payroll / billing calculations
 server/connectors.js   Billing, Acon (SQL Server) and SPN (REST) connectors with dry-run fallback
 server/db.js           Schema + demo seed (plain SQL, portable to SQL Server)
-public/                Single-page UI (vanilla JS, no build step)
+public/                Single-page UI (vanilla JS, no build step); reports.js = pivot engine
 integration/           SQL query template, sync jobs, Acon staging table
 test/                  End-to-end API tests (node --test)
 ```

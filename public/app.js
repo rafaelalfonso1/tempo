@@ -81,6 +81,7 @@ function connectRealtime() {
       if (ev.by !== S.me.id) ev.changes.forEach((c) => $(`td.cell[data-e="${c.employee_id}"][data-d="${c.work_date}"]`)?.classList.add('flash'));
       return;
     }
+    if (route === 'reports' && ['attendance', 'hours', 'roster', 'meta'].includes(ev.type)) { RPT.loadedRange = null; return softReload(); }
     if (ev.type === 'attendance' && route === 'time') return softReload();
     if (['hours', 'roster', 'approval'].includes(ev.type)) softReload();
   };
@@ -93,6 +94,7 @@ const ROUTES = [
   { id: 'attendance', label: 'Attendance', icon: '☑' },
   { id: 'time', label: 'Time & Hours', icon: '⏱' },
   { id: 'roster', label: 'Roster', icon: '👥' },
+  { id: 'reports', label: 'Reports', icon: '📊' },
   { id: 'approvals', label: 'Weekly Approval', icon: '✔', managers: true },
   { id: 'settings', label: 'Settings', icon: '⚙', managers: true },
 ];
@@ -117,7 +119,7 @@ async function route() {
   if (!S.me) return;
   const r = currentRoute();
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.r === r));
-  const fn = { attendance: viewAttendance, time: viewTime, roster: viewRoster, approvals: viewApprovals, settings: viewSettings }[r] || viewAttendance;
+  const fn = { attendance: viewAttendance, time: viewTime, roster: viewRoster, reports: viewReports, approvals: viewApprovals, settings: viewSettings }[r] || viewAttendance;
   try { await fn(); } catch (e) { toast(e.message, true); }
 }
 window.addEventListener('hashchange', () => { closeLayers(); route(); });
@@ -217,7 +219,7 @@ function renderAttendanceGrid() {
     let present = 0, absent = 0, hrs = 0; const counts = {};
     const cells = days.map((d) => {
       const m = marks[e.id]?.[d]; const c = m && codeById(m.code_id); const h = hours[e.id]?.[d];
-      if (c) { counts[c.id] = (counts[c.id] || 0) + 1; if (c.counts_present) present++; else if (c.code !== 'O' && c.code !== 'H') absent++; }
+      if (c) { counts[c.id] = (counts[c.id] || 0) + 1; if (c.counts_present) present++; else if (c.counts_absent) absent++; }
       if (h) hrs += h.total;
       const locked = isLockedDay(e, d);
       return `<td class="cell ${dayCls(d)} ${locked ? 'locked' : ''}" data-e="${e.id}" data-d="${d}" title="${esc(c ? c.label + (m.note ? ' — ' + m.note : '') : 'Not marked')}">
@@ -530,7 +532,7 @@ async function viewApprovals() {
 // ---------------------------------------------------------------- SETTINGS
 const CONFIG = {
   campaigns: { title: 'Campaigns', fields: [['code', 'Code', 'text', true], ['name', 'Name', 'text', true], ['client', 'Client', 'text'], ['billing_code', 'Billing code', 'text'], ['active', 'Active', 'bool']] },
-  attendance_codes: { title: 'Attendance codes', fields: [['code', 'Code', 'text', true], ['label', 'Label', 'text', true], ['color', 'Color', 'color'], ['counts_present', 'Counts as present', 'bool'], ['is_paid', 'Paid', 'bool'], ['campaign_id', 'Campaign (blank = all)', 'campaign'], ['sort', 'Sort order', 'number'], ['active', 'Active', 'bool']] },
+  attendance_codes: { title: 'Attendance codes', fields: [['code', 'Code', 'text', true], ['label', 'Label', 'text', true], ['color', 'Color', 'color'], ['counts_present', 'Counts as present', 'bool'], ['counts_absent', 'Counts as absent', 'bool'], ['is_paid', 'Paid', 'bool'], ['campaign_id', 'Campaign (blank = all)', 'campaign'], ['sort', 'Sort order', 'number'], ['active', 'Active', 'bool']] },
   dispositions: { title: 'Dispositions', fields: [['code', 'Code', 'text', true], ['label', 'Label', 'text', true], ['campaign_id', 'Campaign (blank = all)', 'campaign'], ['description', 'Description', 'text'], ['direction', 'Direction', 'direction'], ['payroll_code', 'Payroll earning code', 'text'], ['is_paid', 'Paid', 'bool'], ['is_billable', 'Billable', 'bool'], ['requires_note', 'Requires note', 'bool'], ['active', 'Active', 'bool']] },
 };
 async function viewSettings() {

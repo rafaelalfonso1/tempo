@@ -108,3 +108,23 @@ test('approval locks the week, then exports payroll and billing', async () => {
   assert.strictEqual((await ops('POST', '/api/approvals', { week_start: WEEK, campaign_id: 1, action: 'reopen' })).status, 200);
   assert.strictEqual((await sup('PUT', '/api/attendance', { employee_id: emp.id, work_date: DAY, code_id: 1 })).status, 200);
 });
+
+test('report facts are scoped and saved reports are owner-protected', async () => {
+  const sup = await login('msantos', 'super123');
+  const ops = await login('ops', 'ops123');
+  const from = WEEK, to = L.addDays(WEEK, 6);
+  const supFacts = (await sup('GET', `/api/reports/facts?from=${from}&to=${to}`)).body;
+  assert.ok(supFacts.employees.every((e) => e.supervisor_id === 'SUP001'));
+  const opsFacts = (await ops('GET', `/api/reports/facts?from=${from}&to=${to}`)).body;
+  assert.ok(opsFacts.employees.length > supFacts.employees.length);
+  const emp = opsFacts.employees.find((e) => e.employee_id === 'E9000');
+  const row = opsFacts.rows.find((r) => r[0] === emp.id && r[1] === DAY);
+  assert.deepStrictEqual(row.slice(3), [7.5, 0.5, 8, 8, 7]); // raw, adj, total, paid, billable
+  assert.strictEqual((await ops('GET', '/api/reports/facts?from=2025-01-01&to=2026-12-31')).status, 400);
+
+  const saved = await ops('POST', '/api/reports/saved', { name: 'Ops view', config: { rows: ['campaign'] }, shared: 1 });
+  assert.strictEqual(saved.status, 200);
+  assert.ok((await sup('GET', '/api/reports/saved')).body.some((r) => r.name === 'Ops view'));
+  assert.strictEqual((await sup('DELETE', `/api/reports/saved/${saved.body.id}`)).status, 403);
+  assert.strictEqual((await ops('DELETE', `/api/reports/saved/${saved.body.id}`)).status, 200);
+});

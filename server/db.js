@@ -171,6 +171,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `);
 
+// ---------- migrations (safe to re-run) ----------
+const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some((r) => r.name === c);
+if (!hasCol('attendance_codes', 'counts_absent')) {
+  db.exec('ALTER TABLE attendance_codes ADD COLUMN counts_absent INTEGER NOT NULL DEFAULT 0');
+  db.exec("UPDATE attendance_codes SET counts_absent = 1 WHERE code IN ('A','E','S','NS')");
+}
+db.exec(`CREATE TABLE IF NOT EXISTS saved_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  config TEXT NOT NULL,
+  owner_id INTEGER NOT NULL REFERENCES users(id),
+  shared INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+
 // ---------- helpers ----------
 function hashPassword(pw) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -225,18 +241,18 @@ function seed() {
     const c1 = addCamp.run('HC-INB', 'Healthcare Inbound', 'Acme Health', 'ACME-INB').lastInsertRowid;
     const c2 = addCamp.run('SCHED', 'Patient Scheduling', 'Acme Health', 'ACME-SCH').lastInsertRowid;
 
-    const addCode = db.prepare('INSERT INTO attendance_codes(code,label,color,counts_present,is_paid,sort) VALUES (?,?,?,?,?,?)');
+    const addCode = db.prepare('INSERT INTO attendance_codes(code,label,color,counts_present,is_paid,counts_absent,sort) VALUES (?,?,?,?,?,?,?)');
     [
-      ['P', 'Present', '#16a34a', 1, 1],
-      ['T', 'Tardy', '#ca8a04', 1, 1],
-      ['A', 'Absent (unexcused)', '#dc2626', 0, 0],
-      ['E', 'Excused absence', '#9333ea', 0, 0],
-      ['S', 'Sick', '#ea580c', 0, 1],
-      ['V', 'Vacation / PTO', '#2563eb', 0, 1],
-      ['H', 'Holiday', '#0891b2', 0, 1],
-      ['NS', 'No call / no show', '#7f1d1d', 0, 0],
-      ['O', 'Day off (scheduled)', '#94a3b8', 0, 0],
-      ['TR', 'Training', '#0d9488', 1, 1],
+      ['P', 'Present', '#16a34a', 1, 1, 0],
+      ['T', 'Tardy', '#ca8a04', 1, 1, 0],
+      ['A', 'Absent (unexcused)', '#dc2626', 0, 0, 1],
+      ['E', 'Excused absence', '#9333ea', 0, 0, 1],
+      ['S', 'Sick', '#ea580c', 0, 1, 1],
+      ['V', 'Vacation / PTO', '#2563eb', 0, 1, 0],
+      ['H', 'Holiday', '#0891b2', 0, 1, 0],
+      ['NS', 'No call / no show', '#7f1d1d', 0, 0, 1],
+      ['O', 'Day off (scheduled)', '#94a3b8', 0, 0, 0],
+      ['TR', 'Training', '#0d9488', 1, 1, 0],
     ].forEach((r, i) => addCode.run(...r, i));
 
     const addDisp = db.prepare(`INSERT INTO dispositions(campaign_id,code,label,description,direction,is_paid,is_billable,payroll_code,requires_note)
