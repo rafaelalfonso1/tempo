@@ -198,17 +198,37 @@ function buildPivot(facts, cfg) {
 }
 
 // Flatten the row tree into display order, honouring sort and collapsed groups.
+function sortedKids(node, pv, cfg) {
+  const sortBy = cfg.sort?.by ?? 'label', dir = cfg.sort?.dir ?? 1;
+  const kids = [...node.children.values()];
+  if (sortBy === 'label') kids.sort((a, b) => cmpDim(a.field)(a.value, b.value) * dir);
+  else {
+    const v = cfg.values[sortBy];
+    const val = (n) => (v ? valueOf(pv.cells.get(n.path + SEP + '*'), v) ?? -Infinity : 0);
+    kids.sort((a, b) => (val(a) - val(b)) * dir || cmpDim(a.field)(a.value, b.value));
+  }
+  return kids;
+}
+// Classic (tabular) layout: one column per Rows field, a "<item> Total" row after each group.
+// Entries: { kind: 'leaf' | 'collapsed' | 'subtotal', node, trail: [nodes from level 0] }
+function tabularRows(pv, cfg, { ignoreCollapsed = false } = {}) {
+  const out = [];
+  const walk = (node, trail) => {
+    for (const k of sortedKids(node, pv, cfg)) {
+      const t = [...trail, k];
+      if (!k.children.size) { out.push({ kind: 'leaf', node: k, trail: t }); continue; }
+      if (!ignoreCollapsed && RPT.collapsed.has(k.path)) { out.push({ kind: 'collapsed', node: k, trail: t }); continue; }
+      walk(k, t);
+      if (cfg.subtotals !== false) out.push({ kind: 'subtotal', node: k, trail: t });
+    }
+  };
+  walk(pv.root, []);
+  return out;
+}
 function flattenRows(pv, cfg) {
   const out = [];
-  const sortBy = cfg.sort?.by ?? 'label', dir = cfg.sort?.dir ?? 1;
   const walk = (node) => {
-    let kids = [...node.children.values()];
-    if (sortBy === 'label') kids.sort((a, b) => cmpDim(a.field)(a.value, b.value) * dir);
-    else {
-      const v = cfg.values[sortBy];
-      const val = (n) => (v ? valueOf(pv.cells.get(n.path + SEP + '*'), v) ?? -Infinity : 0);
-      kids.sort((a, b) => (val(a) - val(b)) * dir || cmpDim(a.field)(a.value, b.value));
-    }
+    const kids = sortedKids(node, pv, cfg);
     for (const k of kids) {
       out.push(k);
       if (k.children.size && !RPT.collapsed.has(k.path)) walk(k);
@@ -291,6 +311,9 @@ function renderPane() {
       <span class="ficon ${f.type}">${f.type === 'dim' ? 'Aa' : f.kind === 'ratio' ? '%' : 'Σ'}</span>${esc(f.label)}</label>`).join('')}`).join('')}</div>
     <div class="zones">${ZONES.map(([z, l]) => `<div class="zone-wrap"><div class="zone-label">${l}</div><div class="zone" data-zone="${z}">${zoneChips(z)}</div></div>`).join('')}</div>
     <div class="pane-opts">
+      <label class="f">Layout<select id="rp-layout"><option value="tabular">Classic: one column per row field</option><option value="compact" ${cfg.layout === 'compact' ? 'selected' : ''}>Compact: indented in one column</option></select></label>
+      <div class="opt-row"><label class="chk"><input type="checkbox" id="rp-subtot" ${cfg.subtotals !== false ? 'checked' : ''}> Subtotals</label>
+      <label class="chk" ${cfg.layout === 'compact' ? 'hidden' : ''}><input type="checkbox" id="rp-repeat" ${cfg.repeat ? 'checked' : ''}> Repeat item labels</label></div>
       <label class="f">Sort rows by<select id="rp-sort"><option value="label">Row label</option>${cfg.values.map((v, i) => `<option value="${i}" ${String(cfg.sort?.by) === String(i) ? 'selected' : ''}>${esc(valueLabel(v))}</option>`).join('')}</select></label>
       <select id="rp-dir" title="Direction"><option value="1">Ascending</option><option value="-1" ${cfg.sort?.dir === -1 ? 'selected' : ''}>Descending</option></select>
       <label class="chk"><input type="checkbox" id="rp-heat" ${cfg.heat ? 'checked' : ''}> Color scale</label>
@@ -326,6 +349,9 @@ function renderPane() {
   $('#rp-sort').onchange = (e) => { cfg.sort = { by: e.target.value === 'label' ? 'label' : Number(e.target.value), dir: cfg.sort?.dir ?? 1 }; renderPivot(); };
   $('#rp-dir').onchange = (e) => { cfg.sort = { by: cfg.sort?.by ?? 'label', dir: Number(e.target.value) }; renderPivot(); };
   $('#rp-heat').onchange = (e) => { cfg.heat = e.target.checked; renderPivot(); };
+  $('#rp-layout').onchange = (e) => { cfg.layout = e.target.value; renderPane(); renderPivot(); };
+  $('#rp-subtot').onchange = (e) => { cfg.subtotals = e.target.checked; renderPivot(); };
+  $('#rp-repeat').onchange = (e) => { cfg.repeat = e.target.checked; renderPivot(); };
   $('#rp-expand').onclick = (e) => { e.preventDefault(); RPT.collapsed.clear(); renderPivot(); };
   $('#rp-collapse').onclick = (e) => { e.preventDefault(); collapseAll(); renderPivot(); };
   $('#rp-clear').onclick = (e) => { e.preventDefault(); Object.assign(cfg, { rows: [], cols: [], values: [], filters: [], sort: { by: 'label', dir: 1 } }); changed(); };
@@ -427,6 +453,7 @@ function renderPivot() {
   if (!cfg.values.length) { box.innerHTML = '<div class="pivot-empty">Tick or drag a measure (Σ) into <b>Values</b> to build the report.</div>'; return; }
   if (!pv.count) { box.innerHTML = '<div class="pivot-empty">No records match this date range and filters.</div>'; return; }
   if (cols.length > MAX_COLS) { box.innerHTML = `<div class="pivot-empty">Too many columns (${cols.length}). Move a field from Columns to Rows or add a filter.</div>`; return; }
+  if (cfg.layout !== 'compact') return renderTabular(box, cfg, pv, cols);
   const V = cfg.values; const nv = V.length;
   const colSpecs = [...cols.map((ck) => ({ ck: ck.join(SEP), label: ck.map((v, i) => dimLabel(cfg.cols[i], v)).join(' · ') })), ...(cols.length ? [{ ck: '*', label: 'Grand total', total: true }] : [{ ck: '*', label: '' }])];
 
@@ -459,6 +486,72 @@ function renderPivot() {
   }).join('');
   const grand = `<tr class="pv-grand"><th class="pv-label">Grand total</th>${cellsFor('', true)}</tr>`;
   box.innerHTML = `<table class="pivot"><thead>${head}</thead><tbody>${cfg.rows.length ? body : ''}${grand}</tbody></table>${rows.length > MAX_ROWS ? `<p class="muted" style="padding:8px 12px">Showing first ${MAX_ROWS} of ${rows.length} rows — collapse groups or add a filter.</p>` : ''}`;
+  $$('.pv-tog', box).forEach((b) => b.onclick = () => { const p = decodeURIComponent(b.dataset.path); RPT.collapsed.has(p) ? RPT.collapsed.delete(p) : RPT.collapsed.add(p); renderPivot(); });
+  $$('td[data-p]', box).forEach((td) => td.ondblclick = () => showDrill(decodeURIComponent(td.dataset.p), decodeURIComponent(td.dataset.c)));
+}
+
+function heatScale(cfg, pv, paths, colSpecs) {
+  const V = cfg.values;
+  const scale = V.map(() => ({ min: Infinity, max: -Infinity }));
+  if (cfg.heat) for (const p of paths) for (const c of colSpecs) if (!c.total) V.forEach((v, i) => {
+    const x = valueOf(pv.cells.get(p + SEP + c.ck), v); if (x != null) { scale[i].min = Math.min(scale[i].min, x); scale[i].max = Math.max(scale[i].max, x); }
+  });
+  return (x, i) => {
+    if (!cfg.heat || x == null) return '';
+    const s = scale[i]; if (!(s.max > s.min)) return '';
+    return `background:color-mix(in srgb, var(--accent) ${Math.round(((x - s.min) / (s.max - s.min)) * 38)}%, transparent)`;
+  };
+}
+
+function renderTabular(box, cfg, pv, cols) {
+  const V = cfg.values; const nv = V.length;
+  const R = cfg.rows.length ? cfg.rows : [null];      // no row fields → a single "Grand total" label column
+  const nR = R.length;
+  const colSpecs = [...cols.map((ck) => ({ ck: ck.join(SEP), label: ck.map((v, i) => dimLabel(cfg.cols[i], v)).join(' · ') })), { ck: '*', label: cols.length ? 'Grand total' : '', total: cols.length > 0 }];
+  const entries = cfg.rows.length ? tabularRows(pv, cfg) : [];
+  const heat = heatScale(cfg, pv, entries.filter((e) => e.kind !== 'subtotal').map((e) => e.node.path), colSpecs);
+
+  // Header: one column per row field (Excel "tabular form"), then the value columns.
+  const rowHeads = R.map((r, i) => `<th class="pv-rh ${i === 0 ? 'pv-first' : ''}" ${cols.length && nv > 1 ? 'rowspan="2"' : ''}>${r ? esc(RF[r].label) : ''}</th>`).join('');
+  let head;
+  if (cols.length) {
+    head = `<tr>${rowHeads}${colSpecs.map((c) => `<th class="num ${c.total ? 'pv-total' : ''}" colspan="${nv}">${esc(c.label)}</th>`).join('')}</tr>`;
+    if (nv > 1) head += `<tr>${colSpecs.map((c) => V.map((v) => `<th class="num ${c.total ? 'pv-total' : ''}">${esc(valueLabel(v))}</th>`).join('')).join('')}</tr>`;
+  } else head = `<tr>${rowHeads}${V.map((v) => `<th class="num">${esc(valueLabel(v))}</th>`).join('')}</tr>`;
+
+  const cellsFor = (path, plain) => colSpecs.map((c) => V.map((v, i) => {
+    const x = valueOf(pv.cells.get(path + SEP + c.ck), v);
+    return `<td class="num ${c.total ? 'pv-total' : ''}" data-p="${encodeURIComponent(path)}" data-c="${encodeURIComponent(c.ck)}" style="${plain || c.total ? '' : heat(x, i)}">${fmtValue(x, v)}</td>`;
+  }).join('')).join('');
+  const label = (n, withToggle) => {
+    const tog = withToggle && n.children.size ? `<button class="pv-tog" data-path="${encodeURIComponent(n.path)}" title="${RPT.collapsed.has(n.path) ? 'Expand' : 'Collapse'}">${RPT.collapsed.has(n.path) ? '▸' : '▾'}</button>` : '';
+    return tog + esc(dimLabel(n.field, n.value));
+  };
+
+  const shown = entries.slice(0, MAX_ROWS);
+  let prev = [];  // paths shown in each label column on the previous row
+  const body = shown.map((e) => {
+    const { kind, node, trail } = e;
+    const lvl = trail.length - 1;
+    const tds = [];
+    if (kind === 'subtotal') {
+      for (let i = 0; i < lvl; i++) tds.push(`<td class="pv-rl ${i === 0 ? 'pv-first' : ''}">${cfg.repeat ? esc(dimLabel(trail[i].field, trail[i].value)) : ''}</td>`);
+      tds.push(`<td class="pv-rl pv-subl ${lvl === 0 ? 'pv-first' : ''}" colspan="${nR - lvl}">${esc(dimLabel(node.field, node.value))} Total</td>`);
+      prev = prev.slice(0, lvl); // outer labels stay "already shown" for the rest of their group
+      return `<tr class="pv-sub pv-sub-${lvl}">${tds.join('')}${cellsFor(node.path, true)}</tr>`;
+    }
+    for (let i = 0; i <= lvl; i++) {
+      const show = cfg.repeat || prev[i] !== trail[i].path || (i > 0 && prev[i - 1] !== trail[i - 1].path);
+      tds.push(`<td class="pv-rl ${i === 0 ? 'pv-first' : ''} ${show ? '' : 'pv-rep'}">${show ? label(trail[i], true) : ''}</td>`);
+    }
+    if (kind === 'collapsed') tds.push(`<td class="pv-rl" colspan="${nR - lvl - 1}"></td>`.repeat(nR - lvl - 1 > 0 ? 1 : 0));
+    prev = trail.map((t) => t.path);
+    return `<tr class="${kind === 'collapsed' ? 'pv-coll' : ''}">${tds.join('')}${cellsFor(node.path, kind === 'collapsed')}</tr>`;
+  }).join('');
+  const grand = `<tr class="pv-grand"><td class="pv-rl pv-first" colspan="${nR}">Grand Total</td>${cellsFor('', true)}</tr>`;
+  const valNote = cols.length && nv === 1 ? ` · Values: ${valueLabel(V[0])}` : '';
+  if (valNote) $('#rp-status').textContent += valNote;
+  box.innerHTML = `<table class="pivot pivot-tab"><thead>${head}</thead><tbody>${body}${grand}</tbody></table>${entries.length > MAX_ROWS ? `<p class="muted" style="padding:8px 12px">Showing first ${MAX_ROWS} of ${entries.length} rows — collapse groups or add a filter.</p>` : ''}`;
   $$('.pv-tog', box).forEach((b) => b.onclick = () => { const p = decodeURIComponent(b.dataset.path); RPT.collapsed.has(p) ? RPT.collapsed.delete(p) : RPT.collapsed.add(p); renderPivot(); });
   $$('td[data-p]', box).forEach((td) => td.ondblclick = () => showDrill(decodeURIComponent(td.dataset.p), decodeURIComponent(td.dataset.c)));
 }
@@ -497,17 +590,18 @@ function exportPivotCsv() {
   };
   const values = (path) => colSpecs.flatMap((c) => V.map((v) => num(path, v, c.ck)));
   const lines = [head.map(q).join(',')];
-  // Every row is exported regardless of collapsed state. Group rows carry their subtotals, as in Excel's compact layout.
-  const walk = (n, trail) => {
-    const kids = [...n.children.values()].sort((a, b) => cmpDim(a.field)(a.value, b.value));
-    for (const k of kids) {
-      const t = [...trail, dimLabel(k.field, k.value)];
-      lines.push([...rowHdrs.map((_, i) => (i < t.length ? t[i] : '')), ...values(k.path)].map(q).join(','));
-      walk(k, t);
-    }
-  };
-  if (cfg.rows.length) walk(pv.root, []);
-  lines.push([...rowHdrs.map((_, i) => (i === 0 ? 'Grand total' : '')), ...values('')].map(q).join(','));
+  // Classic layout, every group expanded: each row field in its own column with labels repeated on
+  // every row (so the file filters and sorts cleanly in Excel), plus "<item> Total" rows when subtotals are on.
+  if (cfg.rows.length) for (const e of tabularRows(pv, cfg, { ignoreCollapsed: true })) {
+    const labels = e.trail.map((n) => dimLabel(n.field, n.value));
+    const cells = rowHdrs.map((_, i) => {
+      if (e.kind !== 'subtotal') return labels[i] ?? '';
+      const lvl = labels.length - 1;
+      return i < lvl ? labels[i] : i === lvl ? labels[i] + ' Total' : '';
+    });
+    lines.push([...cells, ...values(e.node.path)].map(q).join(','));
+  }
+  lines.push([...rowHdrs.map((_, i) => (i === 0 ? 'Grand Total' : '')), ...values('')].map(q).join(','));
   const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   const { from, to } = resolveRange(cfg);

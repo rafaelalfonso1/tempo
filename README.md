@@ -128,7 +128,8 @@ Reports works like an Excel pivot table over **agent-days**: one record per agen
 - **Productivity** = total hours ÷ days worked, where a *day worked* is a day marked present **or** with hours > 0. It is recalculated for every cell, subtotal and grand total, so it is correct at any level of grouping and for any period.
 - **Attendance %** = present ÷ (present + absent). Which codes count as present or absent is set per code in Settings → Attendance codes. Days off, vacation and holidays count as neither.
 - **Layout:**
-  - multi-level rows with subtotals that you can expand or collapse, and a grand total row and column
+  - **classic pivot layout** (the default, like Excel's *tabular form*): each field in Rows gets its own column, and each group ends with an "*item* Total" row. You can turn subtotals off or repeat item labels on every row. A *compact* layout, with all row fields indented in one column, is also available.
+  - groups you can expand or collapse, and a grand total row and column
   - sort by row label or by any value
   - optional color scale, like Excel's conditional formatting
 - **Show details:** double-click any cell to see the agent-day records behind it, the same as Excel's "Show Details".
@@ -136,7 +137,7 @@ Reports works like an Excel pivot table over **agent-days**: one record per agen
 - **Saving and exporting:**
   - Six standard reports are included.
   - Users can save their own layouts, and operations/admin can share layouts with everyone.
-  - **Export CSV** writes the full pivot, including collapsed rows.
+  - **Export CSV** writes the full pivot in the classic layout, including collapsed groups, with labels repeated on every row so the file sorts and filters cleanly in Excel.
 - **Who sees what:** supervisors only see their own agents in reports.
 - **Note:** supervisor, campaign and client come from the roster's *current* assignment. If an agent moves teams, their past days move with them.
 

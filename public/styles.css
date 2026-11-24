@@ -216,3 +216,18 @@ td.err { background: var(--danger-soft); }
 .pop .codes button.typed { border-color: var(--accent); }
 .pop:has(.codes) { width: 320px; }
 .pop .codes .code { flex-shrink: 0; min-width: 40px; text-align: center; }
+
+/* classic (tabular) pivot layout */
+table.pivot-tab td.pv-rl { text-align: left; white-space: nowrap; font-size: 13px; border-right: 1px solid var(--line); vertical-align: top; }
+table.pivot-tab th.pv-rh { text-align: left; border-right: 1px solid var(--line); }
+table.pivot-tab .pv-first { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+table.pivot-tab thead .pv-first { z-index: 3; }
+table.pivot-tab td.pv-rep { border-top-color: transparent; }
+table.pivot-tab tbody tr td.pv-rl.pv-rep { border-bottom-color: transparent; }
+table.pivot-tab tr.pv-sub td { font-weight: 700; background: var(--bg); }
+table.pivot-tab tr.pv-sub td.pv-first { background: var(--bg); }
+table.pivot-tab tr.pv-sub-0 td { border-bottom: 1px solid var(--line-strong); }
+table.pivot-tab tr.pv-coll td { font-weight: 600; }
+table.pivot-tab tr.pv-grand td { font-weight: 700; border-top: 2px solid var(--line-strong); background: var(--accent-soft); position: sticky; bottom: 0; }
+table.pivot-tab .pv-tog { margin-right: 2px; }
+.pane-opts .opt-row { display: flex; gap: 14px; flex-wrap: wrap; }
