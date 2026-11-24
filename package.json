@@ -1,5 +1,5 @@
 {
-  "name": "time-attendance",
+  "name": "tempo",
   "version": "1.0.0",
   "description": "Call center time & attendance: roster, attendance, hours, approvals, payroll/billing export",
   "main": "server/index.js",

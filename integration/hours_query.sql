@@ -1,9 +1,9 @@
 /* =====================================================================
-   Time & Attendance - daily hours extract (SQL Server)
+   Tempo - daily hours extract (SQL Server)
    ---------------------------------------------------------------------
    Run by sync_hours.js / sync_hours.ps1 a few times a day.
    Returns ONE row per agent per day. Re-sending a day overwrites it in
-   the T&A app, so it is safe to re-pull the last few days every run.
+   the Tempo, so it is safe to re-pull the last few days every run.
 
    Required output columns (names matter):
      employee_key  - the agent's Phone System ID (or Employee ID; set

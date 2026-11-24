@@ -1,4 +1,4 @@
-/* Staging table in the Acon SQL Server database that the T&A app writes
+/* Staging table in the Acon SQL Server database that the Tempo writes
    approved payroll hours into (one row per employee per earning code per
    week). A downstream Acon job / stored procedure can load it into payroll.
    Table name is configurable with ACON_SQL_TABLE. */
@@ -15,7 +15,7 @@ CREATE TABLE dbo.TNA_PayrollImport (
 );
 CREATE INDEX IX_TNA_PayrollImport_Batch ON dbo.TNA_PayrollImport (BatchRef);
 
-/* Least-privilege login for the T&A app: */
+/* Least-privilege login for the Tempo: */
 -- CREATE LOGIN tna_writer WITH PASSWORD = '<strong password>';
 -- CREATE USER tna_writer FOR LOGIN tna_writer;
 -- GRANT INSERT ON dbo.TNA_PayrollImport TO tna_writer;

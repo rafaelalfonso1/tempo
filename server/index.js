@@ -1,4 +1,4 @@
-// Time & Attendance server: REST API + Server-Sent Events + static SPA.
+// Tempo server: REST API + Server-Sent Events + static SPA.
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -575,5 +575,5 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 });
 
 const PORT = Number(process.env.PORT || 3000);
-if (require.main === module) app.listen(PORT, () => console.log(`Time & Attendance running on http://localhost:${PORT}`));
+if (require.main === module) app.listen(PORT, () => console.log(`Tempo running on http://localhost:${PORT}`));
 module.exports = app;

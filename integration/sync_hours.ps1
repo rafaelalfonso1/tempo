@@ -1,5 +1,5 @@
 <#
-  Hours sync job (PowerShell, no Node needed): SQL Server -> Time & Attendance app.
+  Hours sync job (PowerShell, no Node needed): SQL Server -> Tempo.
   Schedule with Windows Task Scheduler 2-4 times a day.
 
   Requires the SqlServer module:  Install-Module SqlServer -Scope CurrentUser

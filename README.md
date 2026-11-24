@@ -1,9 +1,11 @@
-# Call Center Time & Attendance
+# Tempo
+
+Call center time & attendance platform.
 
 Roster, daily attendance, hours review/adjustment, weekly approval, and payroll/billing export, all in one web app.
 
 ```
-Phone system (SQL Server) ──sync job 2–4×/day──▶  T&A app  ──weekly, after Ops approval──▶  Billing (CSV / webhook)
+Phone system (SQL Server) ──sync job 2–4×/day──▶  Tempo  ──weekly, after Ops approval──▶  Billing (CSV / webhook)
                                                    │  ▲                                  └▶  Payroll: Acon (SQL Server) or SPN (API)
                                     Supervisors ───┘  └── Operations
 ```

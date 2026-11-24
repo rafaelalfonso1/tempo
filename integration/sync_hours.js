@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Hours sync job: SQL Server -> Time & Attendance app.
+ * Hours sync job: SQL Server -> Tempo.
  * Runs hours_query.sql against the phone-system database and posts the rows
  * to /api/ingest/hours. Schedule it (cron / Windows Task Scheduler) 2-4x a day.
  *

@@ -1,4 +1,4 @@
-/* Time & Attendance — single-page client (vanilla JS, no build step). */
+/* Tempo — single-page client (vanilla JS, no build step). */
 'use strict';
 
 // ---------------------------------------------------------------- utilities
@@ -102,7 +102,7 @@ function renderShell() {
   $('#root').innerHTML = `
   <div class="app">
     <aside class="side">
-      <div class="brand"><span class="brand-mark">TA</span>Time &amp; Attendance</div>
+      <div class="brand"><img class="brand-logo" src="/logo.png" alt="GeBBS Healthcare Solutions">Tempo</div>
       <nav class="nav">${ROUTES.filter((r) => !r.managers || isManager()).map((r) => `<a href="#/${r.id}" data-r="${r.id}"><span>${r.icon}</span>${r.label}</a>`).join('')}</nav>
       <div class="side-foot"><b>${esc(S.me.display_name)}</b>${esc(S.me.role)}${S.me.supervisor_code ? ' · ' + esc(S.me.supervisor_code) : ''}
         <div class="live">Live updates</div>
@@ -125,7 +125,7 @@ window.addEventListener('hashchange', () => { closeLayers(); route(); });
 function renderLogin() {
   $('#root').innerHTML = `
   <div class="login"><form class="panel" id="lf">
-    <div class="brand"><span class="brand-mark">TA</span>Time &amp; Attendance</div>
+    <div class="brand">Tempo</div>
     <label class="f">Username<input type="text" name="u" autocomplete="username" required autofocus></label>
     <label class="f">Password<input type="password" name="p" autocomplete="current-password" required></label>
     <button class="btn primary">Sign in</button>
